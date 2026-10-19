@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Open the speaker amplifiers up (SPEAKER_ATTEN_PROTECTED) only while PipeWire
+# -- and its protecting "Speakers" filter chain -- runs; back to the safe
+# SPEAKER_ATTEN when it stops (/etc/tb323fu/audio.conf).
+#
+# Only the Y700 (TB323FU) has the aw882xx amplifiers at the ALSA controls the
+# helper writes, so the unit is gated on that card instead of failing noisily
+# on every other board sharing this image.
+[Unit]
+Description=Speaker amplifier gain for the protected PipeWire speaker sink
+After=pipewire.service wireplumber.service
+BindsTo=pipewire.service wireplumber.service
+ConditionPathExists=/proc/asound/LENOVOTB323FU
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb323fu/tb323fu-speaker-gain on
+ExecStop=/usr/libexec/tb323fu/tb323fu-speaker-gain off
+
+[Install]
+WantedBy=pipewire.service wireplumber.service

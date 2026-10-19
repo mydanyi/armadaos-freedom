@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+# tb323fu-usb-host.rules -- keep a real USB host from losing the controller.
+#
+# The one dwc3 is shared by both USB-C connectors (a600000.usb-role-switch).
+# ucsi drives the role for port0; if it (or a later Type-C event) drops the
+# controller to device while a real host (partner [source] and [host]) is
+# plugged in, host-reconcile puts the role back. set_role emits a change even
+# for the same value, so the helper never writes a role it already has and its
+# own event is a no-op. The 70 partner rule is unchanged.
+#
+# Gated like the 70 rule: the role switch exists only on the Y700 (TB323FU), but
+# the board id keeps a same-named sysfs node on another board from running it.
+ACTION=="change", SUBSYSTEM=="usb_role", KERNEL=="a600000.usb-role-switch", IMPORT{program}="/usr/libexec/armada/device-env"
+ACTION=="change", SUBSYSTEM=="usb_role", KERNEL=="a600000.usb-role-switch", ENV{ARMADA_DEVICE_ID}=="lenovo-tb323fu", RUN+="/usr/libexec/tb323fu/tb323fu-usb-port host-reconcile"

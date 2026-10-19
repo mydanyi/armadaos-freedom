@@ -47,12 +47,16 @@ run_quirks() {
     write_device_env "$id"
     env ARMADA_DEVICE_ENV="$WORK/device-env" \
         ARMADA_IRIS_V4L2_RULE="$rule" \
+        ARMADA_TB323FU_DSP_FRAGMENT="$DSP_SRC" \
+        ARMADA_AUDIO_CONF_DIR="$WORK/tb323fu" \
         ARMADA_WIREPLUMBER_CONFIG_DIR="$confdir" \
         ARMADA_MEM_SLEEP_PATH="$WORK/mem_sleep" \
         ARMADA_SLEEP_CONFIG="$WORK/sleep.conf" \
         ARMADA_NM_IGNORE_SLEEP="$WORK/ignore-sleep" \
         bash "$DEVICE_QUIRKS"
 }
+
+DSP_SRC="$ROOT/system_files/usr/lib/armada/wireplumber/lenovo-tb323fu-speakers-dsp.conf"
 
 # --- TB322FC installs the exact rule; repeat run is idempotent ---------------
 confdir="$WORK/wp"
@@ -113,5 +117,42 @@ grep -q 'failed to create' "$WORK/blocked.log" ||
     fail "failed install produced no diagnostic"
 [[ -e "$WORK/ignore-sleep" ]] ||
     fail "device-quirks did not run past a failed install"
+
+# --- TB323FU installs its speaker DSP fragment and seeds audio.conf ----------
+confdir="$WORK/wp323"
+rm -rf "$confdir" "$WORK/tb323fu"
+run_quirks "$RULE_SRC" "$confdir" lenovo-tb323fu
+
+dsp_dest="$confdir/61-armada-tb323fu-speakers-dsp.conf"
+[[ -f "$dsp_dest" ]] || fail "TB323FU did not install the speaker DSP fragment"
+cmp -s "$DSP_SRC" "$dsp_dest" || fail "installed DSP fragment does not match the source bytes"
+[[ "$(stat -c '%a' "$dsp_dest")" == 644 ]] || fail "installed DSP fragment mode is not 0644"
+[[ ! -e "$confdir/90-armada-tb322fc-iris.conf" ]] ||
+    fail "TB323FU also installed the TB322FC Iris rule"
+
+audio_conf="$WORK/tb323fu/audio.conf"
+[[ -f "$audio_conf" ]] || fail "TB323FU did not seed /etc/tb323fu/audio.conf"
+grep -qx 'SPEAKER_ATTEN=159' "$audio_conf" || fail "audio.conf lacks the safe attenuation"
+grep -qx 'SPEAKER_ATTEN_PROTECTED=21' "$audio_conf" || fail "audio.conf lacks the protected attenuation"
+
+# A user's own audio.conf is never overwritten by a later boot.
+printf 'SPEAKER_ATTEN=42\n' >"$audio_conf"
+dsp_before="$(stat -c '%i %Y' "$dsp_dest")"
+run_quirks "$RULE_SRC" "$confdir" lenovo-tb323fu
+cmp -s <(printf 'SPEAKER_ATTEN=42\n') "$audio_conf" ||
+    fail "repeat run overwrote the user's audio.conf"
+[[ "$(stat -c '%i %Y' "$dsp_dest")" == "$dsp_before" ]] ||
+    fail "repeat install rewrote the DSP fragment"
+
+# --- Other boards get neither the DSP fragment nor audio.conf ---------------
+confdir="$WORK/wp-other"
+rm -rf "$confdir" "$WORK/tb323fu"
+for id in lenovo-tb322fc retroid-pocket-5 ""; do
+    run_quirks "$RULE_SRC" "$confdir" "$id"
+    [[ ! -e "$confdir/61-armada-tb323fu-speakers-dsp.conf" ]] ||
+        fail "board id '$id' installed the TB323FU DSP fragment"
+    [[ ! -e "$WORK/tb323fu/audio.conf" ]] ||
+        fail "board id '$id' seeded the TB323FU audio.conf"
+done
 
 printf 'device-quirks audio test passed\n'

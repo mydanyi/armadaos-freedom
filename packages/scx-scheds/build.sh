@@ -63,6 +63,11 @@ grep -q -- '--exclude scx_nitosis' "${SPEC}" || {
 
 rpmspec -P "${SPEC}" >/dev/null
 
+# The Terra spec builds with RUSTFLAGS=-Clink-arg=-fuse-ld=mold, but the builder
+# image does not ship mold, so every rustc link fails with
+# "collect2: fatal error: cannot find 'ld'". Fedora 44 has mold; install it.
+dnf -y install mold
+
 dnf -y builddep "${SPEC}"
 anda build --rpm-builder=rpmbuild "${PKG}/pkg"
 

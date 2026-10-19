@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Route USB to the USB-C port in use at boot (Lenovo Y700 TB323FU)
+# not systemd-udev-settle (deprecated, and it waits for slow probes such as
+# the audio DSP): the script is re-run by 70-tb323fu-usb-port.rules on every
+# Type-C change anyway
+After=systemd-udev-trigger.service
+# The helper drives /sys/class/usb_role and gpio30 of one specific board; on
+# every other board it would exit without touching them, but keeping the unit
+# from starting at all also keeps it out of the boot-time job list.
+ConditionPathExists=/sys/class/usb_role/a600000.usb-role-switch
+
+[Service]
+# not oneshot: its gadget recovery may poll up to 15 s and must not hold
+# multi-user.target
+Type=exec
+ExecStart=/usr/libexec/tb323fu/tb323fu-usb-port boot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Start the audio and compute DSPs once their firmware is reachable
+# qcom_q6v5_pas probes from the initramfs, before the root filesystem with
+# /lib/firmware/qcom/kaanapali/lenovo/baldur/{adsp,cdsp}.mbn (too big for the
+# boot image) is mounted, so its auto-boot finds no firmware and gives up.
+# Start them here instead; a DSP that is already running is left alone.
+DefaultDependencies=no
+After=local-fs.target
+Before=sound.target
+ConditionPathExists=/lib/firmware/qcom/kaanapali/lenovo/baldur/adsp.mbn
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A DSP whose firmware is not installed is skipped (the ADSP's is required).
+ExecStart=/bin/sh -c 'fw=/lib/firmware/qcom/kaanapali/lenovo/baldur; rc=0; for want in adsp cdsp; do [ -f $fw/$want.mbn ] || { echo "$want: no firmware, skipped"; continue; }; f=; for r in /sys/class/remoteproc/remoteproc*; do [ "$(cat $r/name)" = $want ] || continue; f=1; [ "$(cat $r/state)" = running ] && break; echo start > $r/state || rc=1; done; [ -n "$f" ] || echo "no $want remoteproc"; done; exit $rc'
+
+[Install]
+WantedBy=sysinit.target

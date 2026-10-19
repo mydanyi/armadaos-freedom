@@ -1,0 +1,110 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# tb323fu-speaker-gain on|off|status -- speaker amplifier attenuation for the
+# protected PipeWire "Speakers" sink.
+#   on   SPEAKER_ATTEN_PROTECTED (loud; the filter chain protects the speakers)
+#   off  SPEAKER_ATTEN (the safe boot value, 16 dB down; nothing needed)
+# Run by the user unit tb323fu-speaker-gain.service, bound to pipewire.service:
+# the amplifiers are only opened up while PipeWire (and its protecting filter)
+# runs. Needs the audio group (ALSA control device).
+SPEAKER_ATTEN=159
+SPEAKER_ATTEN_PROTECTED=21
+[ -r /etc/tb323fu/audio.conf ] && . /etc/tb323fu/audio.conf
+# One initial lookup is enough for off/status (immediate, unchanged). For "on"
+# the card may register a few seconds after this oneshot starts; a still missing
+# card is waited for, bounded (at most 21 queries, 20 * 0.5 s), instead of being
+# reported as a completed attenuation. A missing card never runs amixer and
+# never opens the amplifiers to 21.
+card=$(awk '/LENOVO|TB323FU/{print $1; exit}' /proc/asound/cards)
+if [ -z "$card" ]; then
+	case $1 in
+	on)
+		i=0
+		until [ -n "$card" ]; do
+			i=$((i + 1))
+			if [ "$i" -gt 20 ]; then
+				echo "no TB323FU sound card" >&2
+				exit 1
+			fi
+			sleep 0.5 || { echo "sleep failed" >&2; exit 1; }
+			card=$(awk '/LENOVO|TB323FU/{print $1; exit}' /proc/asound/cards)
+		done ;;
+	*)
+		echo "no TB323FU sound card"
+		exit 0 ;;
+	esac
+fi
+# pactl can live outside the service PATH (/usr/sbin). Prefer one on PATH so a
+# test mock is picked up, then the known absolute path. Never install anything.
+pactl=$(command -v pactl 2>/dev/null)
+[ -n "$pactl" ] || { [ -x /usr/sbin/pactl ] && pactl=/usr/sbin/pactl; }
+prot=effect_input.speakers
+# Both amplifier channels are written explicitly; the aggregate status is
+# returned so a failed write is never reported as a completed attenuation.
+set_att() {
+	amixer -q -c "$card" cset name=aw_dev_0_volume "$1"; r0=$?
+	amixer -q -c "$card" cset name=aw_dev_1_volume "$1"; r1=$?
+	[ "$r0" -eq 0 ] && [ "$r1" -eq 0 ]
+}
+# The current default output exactly as PipeWire reports it. The query is a
+# direct call, not a pipeline, so its real exit status is kept and a failure
+# can never masquerade as a valid (empty) default.
+cfg() {
+	[ -n "$pactl" ] || return 1
+	"$pactl" get-default-sink
+}
+# The protected sink must be listed with that exact name in the second column,
+# and the listing itself must succeed first. Substrings, approximate names,
+# other columns and a failed listing do not count; any state (SUSPENDED too)
+# is accepted because the filter guards the hardware regardless of state.
+guard() {
+	[ -n "$pactl" ] || return 1
+	out=$("$pactl" list short sinks 2>/dev/null) || return 1
+	printf '%s\n' "$out" |
+		awk -v p="$prot" '$2 == p { f = 1 } END { exit !f }'
+}
+# Try to restore the safe attenuation on both channels; a failing restore is
+# reported too. Always exits non-zero.
+fail_safe() {
+	echo "restoring safe attenuation $SPEAKER_ATTEN" >&2
+	set_att "$SPEAKER_ATTEN" || echo "failed to restore $SPEAKER_ATTEN" >&2
+	exit 1
+}
+case $1 in
+on)
+	# read the default first; a non-zero query is a hard failure
+	def=$(cfg) || { echo "cannot read default sink" >&2; fail_safe; }
+	# wait for the protected sink (21 queries, max 20 * 0.5 s) before moving
+	# the default: PipeWire's do_set_default returns ENOENT for a sink that
+	# does not exist yet, unlike the old pw-metadata preset.
+	i=0
+	until guard; do
+		i=$((i + 1))
+		if [ $i -gt 20 ]; then
+			echo "no $prot -- staying at $SPEAKER_ATTEN" >&2
+			fail_safe
+		fi
+		sleep 0.5 || { echo "sleep failed" >&2; fail_safe; }
+	done
+	# the configured default: a user's own choice (headphones, Bluetooth) is
+	# kept; empty, the raw speaker sink or an old loudness sink becomes the
+	# protected "Speakers".
+	case $def in
+	"" | *HiFi__Speaker__sink | effect_input.speaker_plus*)
+		"$pactl" set-default-sink "$prot" >/dev/null 2>&1 ||
+			{ echo "cannot set $prot as default" >&2; fail_safe; } ;;
+	esac
+	set_att "$SPEAKER_ATTEN_PROTECTED" ||
+		{ echo "cannot set protected attenuation" >&2; fail_safe; } ;;
+off) set_att "$SPEAKER_ATTEN" ;;
+status)
+	amixer -c "$card" cget name=aw_dev_0_volume | sed -n 's/.*: values=/aw_dev_0_volume /p'
+	amixer -c "$card" cget name=aw_dev_1_volume | sed -n 's/.*: values=/aw_dev_1_volume /p'
+	if d=$(cfg); then
+		echo "default output: $d"
+	else
+		echo "default output: unknown (error)" >&2
+		exit 1
+	fi ;;
+*) echo "usage: $0 on|off|status"; exit 2 ;;
+esac

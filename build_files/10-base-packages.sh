@@ -68,6 +68,8 @@ dnf5 -y install --setopt=install_weak_deps=False \
     distrobox \
     wl-clipboard \
     btop \
+    ladspa-swh-plugins \
+    libgpiod-utils \
     tailscale
 
 curl --connect-timeout 30 --max-time 120 --retry 3 -fsSL \
