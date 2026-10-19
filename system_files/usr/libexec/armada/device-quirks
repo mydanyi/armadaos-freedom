@@ -6,7 +6,9 @@ mem_sleep=${ARMADA_MEM_SLEEP_PATH:-/sys/power/mem_sleep}
 nm_ignore_sleep=${ARMADA_NM_IGNORE_SLEEP:-/etc/NetworkManager/ignore-sleep}
 sleep_config=${ARMADA_SLEEP_CONFIG:-/etc/armada/sleep.conf}
 iris_rule_src=${ARMADA_IRIS_V4L2_RULE:-/usr/lib/armada/wireplumber/lenovo-tb322fc-iris.conf}
+tb323fu_dsp_src=${ARMADA_TB323FU_DSP_FRAGMENT:-/usr/lib/armada/wireplumber/lenovo-tb323fu-speakers-dsp.conf}
 wireplumber_conf_dir=${ARMADA_WIREPLUMBER_CONFIG_DIR:-/etc/wireplumber/wireplumber.conf.d}
+audio_conf_dir=${ARMADA_AUDIO_CONF_DIR:-/etc/tb323fu}
 
 eval "$("$device_env")"
 
@@ -92,9 +94,70 @@ install_tb322fc_iris_rule() {
     fi
 }
 
+# TB323FU's speaker protection is a WirePlumber software-DSP filter on the
+# platform-sound HiFi speaker node. That node name is generic to Qualcomm boards
+# sharing this image, and attaching the filter elsewhere would put a limiter on
+# speakers that do not need it, so the fragment is installed only on this board
+# (same pattern as the TB322FC Iris rule above). Every failure is reported but
+# never fatal.
+install_tb323fu_dsp_fragment() {
+    local dest="$wireplumber_conf_dir/61-armada-tb323fu-speakers-dsp.conf"
+
+    if [[ ! -r "$tb323fu_dsp_src" ]]; then
+        echo "device-quirks: $tb323fu_dsp_src not readable, skipping TB323FU speaker DSP fragment" >&2
+        return 0
+    fi
+
+    if ! install -d -m 0755 "$wireplumber_conf_dir"; then
+        echo "device-quirks: failed to create $wireplumber_conf_dir, skipping TB323FU speaker DSP fragment" >&2
+        return 0
+    fi
+
+    # Leave an already-correct drop-in untouched so repeat boots keep a stable
+    # inode/mtime; unrelated configs in this directory are never removed.
+    if [[ -r "$dest" ]] && cmp -s "$tb323fu_dsp_src" "$dest"; then
+        return 0
+    fi
+
+    if ! install -m 0644 "$tb323fu_dsp_src" "$dest"; then
+        echo "device-quirks: failed to install $dest" >&2
+    fi
+}
+
+# /etc/tb323fu/audio.conf holds the amplifier attenuation the speaker helper
+# sources. Absent, the helper falls back to its compiled-in safe values, so a
+# missing file is not an error; seed it only on the board that has those amps.
+seed_tb323fu_audio_conf() {
+    local dest="$audio_conf_dir/audio.conf"
+
+    if [[ -e "$dest" ]]; then
+        return 0
+    fi
+
+    if ! install -d -m 0755 "$audio_conf_dir"; then
+        echo "device-quirks: failed to create $audio_conf_dir, skipping TB323FU audio.conf" >&2
+        return 0
+    fi
+
+    if ! printf '%s\n' \
+        '# TB323FU aw882xx speaker amplifier attenuation (see tb323fu-speaker-gain).' \
+        '# Protected runs 2 dB under Android'"'"'s maximum voltage; 159 is the safe' \
+        '# boot value, 16 dB down.' \
+        'SPEAKER_ATTEN=159' \
+        'SPEAKER_ATTEN_PROTECTED=21' >"$dest"; then
+        echo "device-quirks: failed to write $dest" >&2
+        return 0
+    fi
+    chmod 0644 "$dest" 2>/dev/null || true
+}
+
 case "${ARMADA_DEVICE_ID:-}" in
     lenovo-tb322fc)
         install_tb322fc_iris_rule
+        ;;
+    lenovo-tb323fu)
+        install_tb323fu_dsp_fragment
+        seed_tb323fu_audio_conf
         ;;
 esac
 

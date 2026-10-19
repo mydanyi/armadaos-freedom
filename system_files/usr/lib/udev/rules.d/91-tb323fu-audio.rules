@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+# Speakers: after 90-alsa-restore.rules, set the speaker route and the
+# amplifiers' safe attenuation from /etc/tb323fu/audio.conf.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="LENOVOTB323FU", RUN+="/usr/libexec/tb323fu/tb323fu-audio-defaults $attr{device/number}"

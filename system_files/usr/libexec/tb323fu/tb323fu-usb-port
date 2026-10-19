@@ -1,0 +1,302 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# tb323fu-usb-port -- route the one USB controller to the connector in use.
+# TB323FU has two USB-C ports on one dwc3: the bottom one
+# (USB 3.2 + DP, ucsi port0) and the side one (USB 2.0 only, ucsi port1).
+# TLMM gpio30 picks which connector gets the HS lines (Android: low = bottom,
+# high = side; the vendor ucsi-glink "gpios"). Only port0 is in the DT
+# connector graph, so ucsi sets the controller's role for it; for the side
+# port this script does, from port1's power role.
+# Every invocation is serialized on a lock before any GPIO/chip/role/UDC state
+# is read, so concurrent Type-C events cannot interleave their writes.
+# A port whose partner is both [source] and [host] is a real host and is
+# routed first, before any device path: a charger on port0 must not force
+# gpio30 low and tear down the xHCI the gamepad is using. data_role alone is
+# never trusted for that (a non-PD PC charging the tablet reports host there
+# too while the tablet sinks).
+# When a partner is present on both ports and both power roles are [sink]
+# (the current role is device/none and a gadget function is bound), try the
+# bottom then the side connector as two routing candidates with a none ->
+# device toggle and wait for enumeration. Both present/sink plus a bound
+# gadget only enables trying those two routing candidates; a configured UDC
+# proves enumeration. No inference that a PD partner has or lacks data.
+# An already configured/suspended UDC is only
+# preserved, never written to, and never reported as a new enumeration.
+# Otherwise fall back to the original single-port/host selection: bottom wins
+# when port0 has a partner (or port1 has none), side otherwise; the side role
+# is device for [sink], host otherwise.
+# Run by 70-tb323fu-usb-port.rules on Type-C partner changes and at boot.
+# The 71 usb_role rule additionally runs "host-reconcile": after a short
+# settle it looks only for a real host candidate and corrects a device role
+# ucsi stole from it; with no candidate it is a no-op and never enters a
+# device path. Writes touch only gpio30 and the role, and only when they
+# differ, so the change event our own write emits is a no-op next time and
+# cannot loop.
+# With "boot" (the service), only the original device path additionally
+# recovers the gadget: after some forced restarts the UDC stays "not attached"
+# although ucsi has the role at device and a PC is on the port; a none ->
+# device toggle brings it up. The state is logged first so the cause can be
+# traced.
+role=/sys/class/usb_role/a600000.usb-role-switch/role
+udc=/sys/class/udc/a600000.usb/state
+func=/sys/class/udc/a600000.usb/function
+
+log() { logger -t tb323fu-usb-port "$@"; }
+
+# serialize every invocation first, before reading any GPIO/role/UDC state
+exec 9>/run/lock/tb323fu-usb-port.lock
+if ! flock -w30 9; then
+	log "could not lock /run/lock/tb323fu-usb-port.lock within 30s"
+	exit 1
+fi
+
+# host-reconcile is a usb_role change: wait briefly for ucsi to settle, then
+# look only at host candidates. set_role emits change even for the same value,
+# so this must never rewrite a role it already has; its own event is a no-op.
+reconcile=
+if [ "${1:-}" = host-reconcile ]; then
+	reconcile=1
+	sleep 0.2
+fi
+
+# original dynamic chip detection: no gpiochip8 literal
+chip=$(gpiodetect 2>/dev/null | awk '/\[f100000\.pinctrl\]/ {print $1; exit}')
+[ -n "$chip" ] || exit 0
+
+# a real host candidate: the partner is both [source] and [host]
+host_candidate() {
+	[ -e /sys/class/typec/port$1-partner ] || return 1
+	grep -q '\[source\]' /sys/class/typec/port$1/power_role 2>/dev/null || return 1
+	grep -q '\[host\]' /sys/class/typec/port$1/data_role 2>/dev/null || return 1
+}
+
+# bottom (port0) has priority over the side (port1)
+host_port() {
+	host_candidate 0 && { echo 0; return 0; }
+	host_candidate 1 && { echo 1; return 0; }
+	return 1
+}
+
+# gpio30 read without changing direction (--as-is): never default it to input
+read_gpio30() {
+	gpioget --as-is --numeric -c "$chip" 30 2>/dev/null
+}
+
+# route gpio30 to $1 (0 = bottom/port0, 1 = side/port1) and request host mode.
+# Bypasses the configured-gadget guard on purpose: a real host must win over a
+# bound device. Only what differs is written (idempotent), so the usb_role
+# change this very write emits is a no-op next time. A GPIO read or write
+# failure is logged and returns non-zero without touching any other GPIO.
+route_host() {
+	hg=$1
+	cg=$(read_gpio30)
+	[ -n "$cg" ] || { log "gpioget 30 failed"; return 1; }
+	if [ "$cg" != "$hg" ]; then
+		gpioset -c "$chip" -t0 30=$hg ||
+			{ log "gpioset 30=$hg failed"; return 1; }
+		log "host candidate on port $hg: gpio30 $cg -> $hg"
+	fi
+	if [ "$(cat $role 2>/dev/null)" != host ]; then
+		echo host > "$role" 2>/dev/null ||
+			{ log "failed to write role host"; return 1; }
+		log "host candidate on port $hg: role host"
+	fi
+	return 0
+}
+
+# bounded confirmation after a host write: at most 5 x 0.2s. A vanished
+# candidate ends it (nothing left to route); never an unbounded retry.
+await_host() {
+	n=0
+	while [ $n -lt 5 ]; do
+		host_port >/dev/null 2>&1 || return 0
+		[ "$(cat $role 2>/dev/null)" = host ] && return 0
+		sleep 0.2
+		n=$((n + 1))
+	done
+	log "host not confirmed after 5 x 0.2s"
+	return 1
+}
+
+# a real host wins over every device path and bypasses the UDC guard
+if hp=$(host_port); then
+	if route_host "$hp"; then
+		[ -n "$reconcile" ] && { await_host || exit 1; }
+		exit 0
+	fi
+	exit 1
+fi
+# no host on a usb_role change: nothing to correct, never enter a device path
+[ -n "$reconcile" ] && exit 0
+
+# an already enumerated link is preserved, never written to
+udc_guard() {
+	case "$(cat $udc 2>/dev/null)" in
+	configured)
+		log "UDC configured: preserving existing data path"
+		exit 0 ;;
+	suspended)
+		log "UDC suspended: preserving existing route (not a new enumeration)"
+		exit 0 ;;
+	esac
+}
+
+role_none_or_dev() {
+	case "$(cat $role 2>/dev/null)" in
+	none|device) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# both ports have a partner and are [sink]: this only makes the two routing
+# candidates worth trying (never the unreliable USBpartner bit21)
+dual_ok() {
+	[ -e /sys/class/typec/port0-partner ] &&
+	[ -e /sys/class/typec/port1-partner ] &&
+	grep -q '\[sink\]' /sys/class/typec/port0/power_role 2>/dev/null &&
+	grep -q '\[sink\]' /sys/class/typec/port1/power_role 2>/dev/null
+}
+
+# initial branch gate: the bound gadget function is required only here, it can
+# transiently disappear during the role transition so it is not rechecked
+dual_gate() {
+	dual_ok && role_none_or_dev &&
+	[ -n "$(cat $func 2>/dev/null)" ]
+}
+
+# wait up to five one-second ticks for enumeration; a preserved link exits
+await_configured() {
+	case "$(cat $udc 2>/dev/null)" in
+	configured)
+		log "port $pgpio: UDC configured after toggle"
+		return 0 ;;
+	suspended)
+		log "UDC suspended: preserving existing route (not a new enumeration)"
+		exit 0 ;;
+	esac
+	n=0
+	while [ $n -lt 5 ]; do
+		sleep 1
+		n=$((n + 1))
+		case "$(cat $udc 2>/dev/null)" in
+		configured)
+			log "port $pgpio: UDC configured after toggle"
+			return 0 ;;
+		suspended)
+			log "UDC suspended: preserving existing route (not a new enumeration)"
+			exit 0 ;;
+		esac
+	done
+	return 1
+}
+
+# probe one connector (gpio30 value): toggle none -> device and wait.
+# returns 2 when the 5s wait expired, 1 on a hard failure or a changed
+# eligibility (already logged); a configured/suspended link exits through
+# udc_guard/await_configured.
+probe_port() {
+	pgpio=$1
+	udc_guard
+	if ! dual_ok || ! role_none_or_dev; then
+		log "dual-port eligibility changed before gpio write; stopping"
+		return 1
+	fi
+	gpioset -c "$chip" -t0 30=$pgpio ||
+		{ log "gpioset 30=$pgpio failed"; return 1; }
+
+	udc_guard
+	if ! dual_ok || ! role_none_or_dev; then
+		log "dual-port eligibility changed before none write; stopping"
+		return 1
+	fi
+	echo none > "$role" 2>/dev/null ||
+		{ log "failed to write role none"; return 1; }
+
+	sleep 1
+
+	udc_guard
+	if ! dual_ok || ! role_none_or_dev; then
+		log "dual-port eligibility changed before device write; stopping"
+		return 1
+	fi
+	echo device > "$role" 2>/dev/null ||
+		{ log "failed to write role device"; return 1; }
+
+	await_configured && exit 0
+	log "port $pgpio: UDC not configured after 5s"
+	return 2
+}
+
+udc_guard	# device-path entry: a configured/suspended link returns above
+
+if dual_gate; then
+	probe_port 0
+	rc=$?
+	[ "$rc" = 2 ] || exit "$rc"
+	probe_port 1
+	rc=$?
+	[ "$rc" = 2 ] || exit "$rc"
+	# both five-second waits expired: back to the default, bottom priority,
+	# without another none -> device toggle and without legacy recovery
+	udc_guard
+	if dual_ok && role_none_or_dev; then
+		if ! gpioset -c "$chip" -t0 30=0; then
+			log "gpioset 30=0 failed restoring bottom priority; exiting"
+			exit 1
+		fi
+		log "dual-port probe timed out; bottom priority restored"
+	else
+		log "dual-port probe timed out; eligibility changed, leaving gpio30"
+	fi
+	exit 0
+fi
+
+# original single-port/host selection
+if [ -e /sys/class/typec/port0-partner ] || [ ! -e /sys/class/typec/port1-partner ]; then
+	udc_guard
+	gpioset -c "$chip" -t0 30=0
+	# port0 empty too: back to the default role, ready for a PC
+	udc_guard
+	[ -e /sys/class/typec/port0-partner ] || echo device > "$role" 2>/dev/null
+	log "bottom port (gpio30 low)"
+else
+	udc_guard
+	gpioset -c "$chip" -t0 30=1
+	# ucsi reports port1's data role as host even with a PC on it (non-PD,
+	# the tablet sinking), so take the role from the power role
+	case "$(cat /sys/class/typec/port1/power_role)" in
+	*"[sink]"*) r=device ;;
+	*) r=host ;;
+	esac
+	udc_guard
+	echo "$r" > "$role" 2>/dev/null
+	log "side port (gpio30 high), role $r"
+fi
+
+# legacy boot-only gadget recovery, original device path only
+[ "${1:-}" = boot ] || exit 0
+usb=/sys/class/power_supply/qcom-battmgr-usb
+# nothing to recover without a USB host on the cable: don't poll at all
+grep -q '\[\(SDP\|CDP\)\]' $usb/usb_type 2>/dev/null || exit 0
+# only the original device path is recovered
+[ "$(cat $role 2>/dev/null)" = device ] || exit 0
+for i in $(seq 1 15); do
+	[ "$(cat $udc 2>/dev/null)" = "not attached" ] || exit 0
+	sleep 1
+done
+# still not attached: only act when a USB host is actually there
+grep -q '\[\(SDP\|CDP\)\]' $usb/usb_type 2>/dev/null || exit 0
+[ "$(cat $usb/online 2>/dev/null)" = 1 ] || exit 0
+udc_guard
+[ "$(cat $role 2>/dev/null)" = device ] || exit 0
+[ "$(cat $udc 2>/dev/null)" = "not attached" ] || exit 0
+log "gadget not attached with a host present: role=$(cat $role) port0 data=$(cat /sys/class/typec/port0/data_role) power=$(cat /sys/class/typec/port0/power_role) partner=$([ -e /sys/class/typec/port0-partner ] && echo yes || echo no) usb_type=$(cat $usb/usb_type) uptime=$(cut -d' ' -f1 /proc/uptime); toggling role"
+echo none > "$role" 2>/dev/null
+sleep 1
+udc_guard
+[ "$(cat $role 2>/dev/null)" = none ] || exit 0
+grep -q '\[\(SDP\|CDP\)\]' $usb/usb_type 2>/dev/null || exit 0
+[ "$(cat $usb/online 2>/dev/null)" = 1 ] || exit 0
+echo device > "$role" 2>/dev/null
+sleep 3
+log "after toggle: udc $(cat $udc)"

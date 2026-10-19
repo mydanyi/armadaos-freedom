@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Speaker and microphone mixer defaults after the saved ALSA state
+# 91-tb323fu-audio.rules sets them when the card appears, but alsa-restore
+# runs "alsactl restore" again later in boot and would put back whatever state
+# was saved -- including the amplifiers' attenuation. Set the defaults once
+# more after it; sound.target (reached when the card appears) pulls in both.
+After=alsa-restore.service sound.target
+Wants=alsa-restore.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for f in /proc/asound/card*/id; do [ "$(cat $f)" = LENOVOTB323FU ] || continue; c=$${f#/proc/asound/card}; /usr/libexec/tb323fu/tb323fu-audio-defaults $${c%%/id}; done'
+
+[Install]
+WantedBy=sound.target

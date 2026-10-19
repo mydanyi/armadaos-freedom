@@ -1,0 +1,83 @@
+{
+# SPDX-License-Identifier: MIT
+# Built-in speakers with protection and loudness.
+#
+# Android drives the aw882xx amplifiers unattenuated and protects the speakers
+# in the DSP (Awinic SKTune + MBDRC). Measured: with the amplifiers
+# at Android's setting, raw pink noise draws +192 mA over idle, Android's DSP
+# chain at full volume +520 mA (its ceiling). So the amplifiers now run at
+# SPEAKER_ATTEN_PROTECTED (/etc/tb323fu/audio.conf, ~2 dB under Android's
+# maximum voltage) while PipeWire runs (tb323fu-speaker-gain.service), and this
+# one sink does the protecting:
+#   1. high-pass 120 Hz (2nd order): the small speakers cannot reproduce it,
+#      it only costs power and cone excursion
+#   2. gentle compressor (2.5:1 over -24 dBFS, +8 dB makeup): louder, clean
+#   3. slow RMS cap (RMS detector, 10:1 over CAP): long-term average power --
+#      the thermal part SKTune would do -- stays under Android's measured
+#      ceiling (calibrated with pink noise and battery current)
+#   4. look-ahead limiter at -1 dBFS: peaks never exceed full scale
+# priority.session: above the raw speaker sink so this is the default output,
+# but below the internal microphones (1728) -- WirePlumber also picks a sink's
+# monitor as a capture source, and at 2000 it made recordings silent.
+# Needs swh-plugins (LADSPA sc4, fastLookaheadLimiter).
+  node.description = "Speakers"
+  media.name       = "Speakers"
+  filter.graph = {
+    nodes = [
+      { type = builtin name = hpL label = bq_highpass control = { "Freq" = 120.0 "Q" = 0.707 } }
+      { type = builtin name = hpR label = bq_highpass control = { "Freq" = 120.0 "Q" = 0.707 } }
+      { type = ladspa name = comp plugin = sc4_1882 label = sc4
+        control = {
+          "RMS/peak" = 0.5
+          "Attack time (ms)" = 10
+          "Release time (ms)" = 200
+          "Threshold level (dB)" = -24
+          "Ratio (1:n)" = 2.5
+          "Knee radius (dB)" = 8
+          "Makeup gain (dB)" = 8
+        }
+      }
+      { type = ladspa name = cap plugin = sc4_1882 label = sc4
+        control = {
+          "RMS/peak" = 1.0
+          "Attack time (ms)" = 150
+          "Release time (ms)" = 1000
+          "Threshold level (dB)" = -14
+          "Ratio (1:n)" = 10
+          "Knee radius (dB)" = 3
+          "Makeup gain (dB)" = 0
+        }
+      }
+      { type = ladspa name = lim plugin = fast_lookahead_limiter_1913 label = fastLookaheadLimiter
+        control = {
+          "Input gain (dB)" = 0
+          "Limit (dB)" = -1
+          "Release time (s)" = 0.05
+        }
+      }
+    ]
+    links = [
+      { output = "hpL:Out"           input = "comp:Left input" }
+      { output = "hpR:Out"           input = "comp:Right input" }
+      { output = "comp:Left output"  input = "cap:Left input" }
+      { output = "comp:Right output" input = "cap:Right input" }
+      { output = "cap:Left output"   input = "lim:Input 1" }
+      { output = "cap:Right output"  input = "lim:Input 2" }
+    ]
+    inputs  = [ "hpL:In" "hpR:In" ]
+    outputs = [ "lim:Output 1" "lim:Output 2" ]
+  }
+  audio.channels = 2
+  audio.position = [ FL FR ]
+  capture.props = {
+    node.name        = "effect_input.speakers"
+    media.class      = Audio/Sink
+    priority.session = 1500
+  }
+  playback.props = {
+    node.name     = "effect_output.speakers"
+    node.passive  = true
+    target.object = "alsa_output.platform-sound.HiFi__Speaker__sink"
+    stream.dont-remix = true
+  }
+}

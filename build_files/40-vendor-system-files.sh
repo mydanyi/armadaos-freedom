@@ -86,6 +86,13 @@ systemctl enable armada-splash-stall.service
 systemctl enable armada-splash-early.service
 systemctl enable armada-splash-reboot-screen.service
 systemctl enable armada-splash-poweroff-screen.service
+# Lenovo Y700 (TB323FU) tablet support. Every unit is self-gating on the board
+# (ConditionPathExists for the role switch / sound card, or a device-env match in
+# its udev rule), so enabling them image-wide cannot act on another board.
+systemctl enable tb323fu-usb-port.service
+systemctl enable tb323fu-audio.service
+systemctl enable tb323fu-dsp.service
+systemctl --global enable tb323fu-speaker-gain.service
 
 # logind's "reboot implies set-wall-message" annotation lets Steam re-enable
 # the reboot wall past the deny rule; the pre-check fails loud on a reformat.

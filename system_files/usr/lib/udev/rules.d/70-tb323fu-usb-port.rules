@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Two USB-C connectors share one USB controller: route it to the one in use on
+# every Type-C partner change (see tb323fu-usb-port).
+#
+# The image is shared with other boards, so the board id gates the RUN. Without
+# it every Type-C event on every device would run a helper whose role/gpio paths
+# only exist on the Y700 (TB323FU).
+ACTION=="add|remove", SUBSYSTEM=="typec", KERNEL=="port[01]-partner", IMPORT{program}="/usr/libexec/armada/device-env"
+ACTION=="add|remove", SUBSYSTEM=="typec", KERNEL=="port[01]-partner", ENV{ARMADA_DEVICE_ID}=="lenovo-tb323fu", RUN+="/usr/libexec/tb323fu/tb323fu-usb-port"

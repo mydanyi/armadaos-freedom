@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# tb323fu-audio-defaults CARD -- mixer defaults for the LENOVO-TB323FU card,
+# run by 91-tb323fu-audio.rules after the udev alsactl restore and by
+# tb323fu-audio.service after alsa-restore.service, so a saved mixer state can
+# never leave the amplifiers unattenuated at boot.
+card=$1
+SPEAKER_ATTEN=159
+MIC_GAIN=12
+[ -r /etc/tb323fu/audio.conf ] && . /etc/tb323fu/audio.conf
+set_ctl() { amixer -q -c "$card" cset name="$1" "$2" || logger -t tb323fu-audio "could not set $1"; }
+
+# Speakers: MultiMedia1 -> primary MI2S, both amplifiers attenuated
+set_ctl 'PRIMARY_MI2S_RX Audio Mixer MultiMedia1' on
+set_ctl aw_dev_0_volume "$SPEAKER_ATTEN"
+set_ctl aw_dev_1_volume "$SPEAKER_ATTEN"
+
+# Microphones, as Android's speaker-mic path: AMIC1 -> WCD ADC1 -> TX DEC0,
+# AMIC4 -> ADC3 -> DEC1, into MultiMedia2 (hw:CARD,1). ADC1-4 share WCD TX
+# port 1, whose ADCn Switch controls read back per port, so a restored mixer
+# state turns ADC2/ADC4 on too: clear them first. ADCn reaches the TX macro
+# as SWR_MIC4 + (n - 1) (DT port mapping). ADC_INVALID, the default mode,
+# leaves the ADCs idle; Android uses ADC_LP and analog gain 12 of 20.
+set_ctl 'MultiMedia2 Mixer TX_CODEC_DMA_TX_3' 1
+set_ctl 'ADC2 Switch' 0; set_ctl 'ADC4 Switch' 0
+set_ctl 'ADC1 MUX' CH1_AMIC1; set_ctl 'ADC1 Switch' 1; set_ctl 'ADC1_MIXER Switch' 1
+set_ctl 'ADC3 MUX' CH3_AMIC4; set_ctl 'ADC3 Switch' 1; set_ctl 'ADC3_MIXER Switch' 1
+set_ctl 'TX0 MODE' ADC_LP; set_ctl 'TX2 MODE' ADC_LP
+set_ctl 'ADC1 Volume' "$MIC_GAIN"; set_ctl 'ADC3 Volume' "$MIC_GAIN"
+set_ctl 'TX DEC0 MUX' SWR_MIC; set_ctl 'TX SMIC MUX0' SWR_MIC4; set_ctl 'TX_AIF1_CAP Mixer DEC0' 1
+set_ctl 'TX DEC1 MUX' SWR_MIC; set_ctl 'TX SMIC MUX1' SWR_MIC6; set_ctl 'TX_AIF1_CAP Mixer DEC1' 1
+
+logger -t tb323fu-audio "card $card: speakers (attenuation $SPEAKER_ATTEN), mics (gain $MIC_GAIN)"
