@@ -30,6 +30,11 @@ typedef enum {
 /* Each stage samples the clock only on its first call. */
 void kshim_boot_metrics_record_once(kshim_boot_stage_t Stage);
 
+/* Records the early-MMU result so /chosen:kshim,mmu-early can report whether
+ * translation was already live on entry and how kshim_mmu_configure_early()
+ * ended.  Negative status values are exported as their two's complement. */
+void kshim_boot_metrics_set_mmu(uint32_t Enabled, int32_t Status);
+
 /* The caller supplies the selected Linux DT, with an existing /chosen node.
  * Only the three properties documented above are changed. No DT resize or
  * memory/reservation edits are performed. A libfdt error (including NOSPACE)
@@ -43,6 +48,12 @@ uint64_t kshim_boot_metrics_now_ms(void);
 static inline void kshim_boot_metrics_record_once(kshim_boot_stage_t Stage)
 {
     (void)Stage;
+}
+
+static inline void kshim_boot_metrics_set_mmu(uint32_t Enabled, int32_t Status)
+{
+    (void)Enabled;
+    (void)Status;
 }
 
 static inline int kshim_boot_metrics_export(void *Fdt)

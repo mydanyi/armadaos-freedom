@@ -90,6 +90,34 @@ static mmu_context_t mMmu;
 extern unsigned char __image_start_address__[];
 extern unsigned char __image_end_address__[];
 
+/* Written by _start_kshim in startup.S: the address the image actually runs
+ * from.  The attached shim is appended to the base image and entered there,
+ * so this is payload_base + shim_offset, not the link address. */
+uint64_t __image_runtime_base__;
+
+/* ARM64 image header magic: "ARMd", then four zero bytes. */
+#define IMAGE_MAGIC_LO UINT32_C(0x644d5241)
+#define IMAGE_MAGIC_OFFSET UINT64_C(0x38)
+#define KSHIM_MMU_PERIPHERAL_LIMIT UINT64_C(0x80000000)
+#define KSHIM_MMU_DRAM_LIMIT UINT64_C(0x100000000)
+
+/* -1 unknown, 0 the runtime base does not hold our image, 1 it does. */
+static int mImageBaseVerified = -1;
+
+static uint64_t image_runtime_base(void)
+{
+    if (__image_runtime_base__ != 0U)
+        return __image_runtime_base__ & ~(MMU_PAGE_SIZE - 1U);
+    return (uint64_t)(uintptr_t)__image_start_address__;
+}
+
+static uint64_t image_runtime_span(void)
+{
+    uint64_t start = (uint64_t)(uintptr_t)__image_start_address__;
+    uint64_t end = (uint64_t)(uintptr_t)__image_end_address__;
+    return end > start ? end - start : 0U;
+}
+
 static uint64_t align_down(uint64_t value, uint64_t alignment)
 {
     return value & ~(alignment - 1U);
@@ -409,12 +437,12 @@ static void disable_at_el(uint64_t exception_level)
 int kshim_mmu_configure(const kshim_mmu_config_t *config)
 {
     kshim_mmu_region_t region;
-    uint64_t image_base = (uint64_t)(uintptr_t)__image_start_address__;
-    uint64_t image_end = (uint64_t)(uintptr_t)__image_end_address__;
+    uint64_t image_base = image_runtime_base();
+    uint64_t image_end = image_base + image_runtime_span();
 
     if (config == NULL || config->extra_region_count > KSHIM_MMU_MAX_EXTRA_REGIONS ||
         (config->extra_region_count != 0U && config->extra_regions == NULL) ||
-        image_end <= image_base)
+        image_end <= image_base || mImageBaseVerified == 0)
         return -1;
 
     memset(&mMmu, 0, sizeof(mMmu));
@@ -606,7 +634,234 @@ void kshim_mmu_cpu_off_prepare(void)
     (void)kshim_mmu_prepare_handoff();
 }
 
+uint64_t kshim_mmu_image_base(void)
+{
+    return image_runtime_base();
+}
+
+static void publish_tables(void)
+{
+#if defined(__aarch64__)
+    clean_range((uint64_t)(uintptr_t)mTables, sizeof(mTables));
+    __asm__ volatile("dsb ishst" ::: "memory");
+#endif
+}
+
+static void invalidate_translation(void)
+{
+#if defined(__aarch64__)
+    if (mMmu.entry_el == CURRENT_EL2)
+        __asm__ volatile("dsb ishst\ntlbi alle2\ndsb ish\nisb" ::: "memory");
+    else
+        __asm__ volatile("dsb ishst\ntlbi vmalle1\ndsb ish\nisb" ::: "memory");
+#endif
+}
+
+/* The image header at the runtime base must carry our own signature word:
+ * _start's branch, then the ARM64 magic at +0x38.  A wrong runtime base is
+ * the one failure mode that cannot be recovered from once SCTLR.M is set, so
+ * it is checked against physical memory before any table is published. */
+static int image_base_matches(uint64_t base)
+{
+    const volatile uint32_t *words;
+    uint32_t branch;
+
+    if (base == 0U || (base & (MMU_PAGE_SIZE - 1U)) != 0U)
+        return 0;
+    if (base > UINT64_MAX - IMAGE_MAGIC_OFFSET - 8U)
+        return 0;
+    branch = *(volatile const uint32_t *)(uintptr_t)base;
+    /* _start is "b _platform_init": opcode 0x14xxxxxx. */
+    if ((branch & UINT32_C(0xfc000000)) != UINT32_C(0x14000000))
+        return 0;
+    words = (const volatile uint32_t *)(uintptr_t)(base + IMAGE_MAGIC_OFFSET);
+    return words[0] == IMAGE_MAGIC_LO && words[1] == 0U;
+}
+
+static uint64_t fdt_cells(const fdt32_t *cells, int count)
+{
+    uint64_t value = 0U;
+
+    for (int index = 0; index < count; index++)
+        value = (value << 32) | fdt32_to_cpu(cells[index]);
+    return value;
+}
+
+/* Map every range the runtime DT declares as RAM, clamped to the low 4 GiB
+ * the shim can reach through its identity window.  Returns the number of
+ * mapped ranges, or -1 when the DT cannot be trusted. */
+static int map_declared_memory(const void *fdt)
+{
+    int length = 0;
+    int address_cells = 2;
+    int size_cells = 2;
+    const fdt32_t *value;
+    int node;
+    int mapped = 0;
+    size_t entry_bytes;
+
+    if (fdt == NULL || fdt_check_header(fdt) != 0)
+        return -1;
+    value = fdt_getprop(fdt, 0, "#address-cells", &length);
+    if (value != NULL && length >= (int)sizeof(*value))
+        address_cells = (int)fdt32_to_cpu(*value);
+    value = fdt_getprop(fdt, 0, "#size-cells", &length);
+    if (value != NULL && length >= (int)sizeof(*value))
+        size_cells = (int)fdt32_to_cpu(*value);
+    if (address_cells < 1 || address_cells > 2 ||
+        size_cells < 1 || size_cells > 2)
+        return -1;
+    entry_bytes = sizeof(fdt32_t) * (size_t)(address_cells + size_cells);
+
+    for (node = fdt_first_subnode(fdt, 0); node >= 0;
+         node = fdt_next_subnode(fdt, node)) {
+        const char *type = fdt_getprop(fdt, node, "device_type", &length);
+        const fdt32_t *reg;
+        /* "memory" is seven bytes including the terminator. */
+        if (type == NULL || length < 7 || strcmp(type, "memory") != 0)
+            continue;
+        reg = fdt_getprop(fdt, node, "reg", &length);
+        if (reg == NULL || (size_t)length < entry_bytes)
+            continue;
+        for (int offset = 0; offset + (int)entry_bytes <= length;
+             offset += (int)entry_bytes) {
+            const fdt32_t *cells = reg + (size_t)offset / sizeof(fdt32_t);
+            uint64_t base = fdt_cells(cells, address_cells);
+            uint64_t size = fdt_cells(cells + address_cells, size_cells);
+            if (size == 0U || base >= KSHIM_MMU_DRAM_LIMIT)
+                continue;
+            if (base > KSHIM_MMU_DRAM_LIMIT - size)
+                size = KSHIM_MMU_DRAM_LIMIT - base;
+            if (map_range(base, size, KSHIM_MMU_NORMAL_WB,
+                          KSHIM_MMU_READ | KSHIM_MMU_WRITE) != 0)
+                return -1;
+            mapped++;
+        }
+    }
+    return mapped;
+}
+
+int kshim_mmu_configure_early(const kshim_mmu_early_config_t *config)
+{
+    uint64_t image_base;
+    uint64_t image_span;
+    int status;
+
+    if (config == NULL)
+        return -1;
+    /* Somebody already runs with translation on: leave it alone. */
+    if (kshim_mmu_is_enabled() != 0)
+        return 0;
+
+    image_base = image_runtime_base();
+    image_span = image_runtime_span();
+    if (image_span == 0U)
+        return -2;
+    if (mImageBaseVerified < 0)
+        mImageBaseVerified = image_base_matches(image_base) ? 1 : 0;
+    if (mImageBaseVerified == 0)
+        return -3;
+
+    memset(&mMmu, 0, sizeof(mMmu));
+    memset(mTables, 0, sizeof(mTables));
+    mMmu.root = allocate_table();
+    if (mMmu.root == NULL)
+        return -4;
+
+    status = -5;
+    /* 1. Device space: every peripheral the shim touches lives below DRAM. */
+    if (map_range(0U, KSHIM_MMU_PERIPHERAL_LIMIT, KSHIM_MMU_DEVICE,
+                  KSHIM_MMU_READ | KSHIM_MMU_WRITE) != 0) {
+        status = -5;
+        goto failed;
+    }
+    /* 2. Declared RAM, so the DT and its reservations are reachable. */
+    if (map_declared_memory(config->fdt) < 0) {
+        status = -6;
+        goto failed;
+    }
+    /* 3. The packed payload: base image, shim slot, DTBs and manifest. */
+    if (config->payload_base != 0U && config->payload_end > config->payload_base &&
+        map_range(config->payload_base, config->payload_end - config->payload_base,
+                  KSHIM_MMU_NORMAL_WB, KSHIM_MMU_READ | KSHIM_MMU_WRITE) != 0) {
+        status = -7;
+        goto failed;
+    }
+    /* 4. The image itself, executable.  Splits whatever step 2 or 3 laid down. */
+    if (map_range(image_base, image_span, KSHIM_MMU_NORMAL_WB,
+                  KSHIM_MMU_READ | KSHIM_MMU_WRITE | KSHIM_MMU_EXECUTE) != 0) {
+        status = -8;
+        goto failed;
+    }
+    /* 5. The runtime DT, in case it sits outside every declared RAM range. */
+    if (config->fdt != NULL && fdt_check_header(config->fdt) == 0) {
+        uint64_t dt_base = (uint64_t)(uintptr_t)config->fdt;
+        uint64_t dt_size = (uint32_t)fdt_totalsize(config->fdt);
+        if (dt_size != 0U &&
+            map_range(dt_base, dt_size, KSHIM_MMU_NORMAL_WB,
+                      KSHIM_MMU_READ | KSHIM_MMU_WRITE) != 0) {
+            status = -9;
+            goto failed;
+        }
+    }
+    /* Only the image is written through the cache by this runtime. */
+    mMmu.regions[mMmu.region_count++] = (kshim_mmu_region_t){
+        .base = image_base,
+        .size = image_span,
+        .type = KSHIM_MMU_NORMAL_WB,
+        .permissions = KSHIM_MMU_READ | KSHIM_MMU_WRITE | KSHIM_MMU_EXECUTE,
+    };
+
+    mMmu.entry_el = current_el();
+    mMmu.configured = 1U;
+    clean_range((uint64_t)(uintptr_t)&mMmu, sizeof(mMmu));
+    publish_tables();
+    if (enable_at_el(mMmu.entry_el) != 0) {
+        status = -10;
+        goto failed;
+    }
+    if (kshim_mmu_is_enabled() == 0) {
+        status = -11;
+        goto failed;
+    }
+    return 0;
+
+failed:
+    /* Leave nothing behind: smp.c keys off the root table pointer, so a half
+     * built context must look exactly like an untouched one. */
+    memset(&mMmu, 0, sizeof(mMmu));
+    memset(mTables, 0, sizeof(mTables));
+    return status;
+}
+
+int kshim_mmu_add_region(uint64_t base, uint64_t size,
+                         kshim_mmu_memory_type_t type, uint32_t permissions)
+{
+    if (base == 0U || size == 0U || type > KSHIM_MMU_DEVICE ||
+        (permissions & KSHIM_MMU_READ) == 0U)
+        return -1;
+    if (mMmu.root == NULL || mMmu.configured == 0U)
+        return -1;
+    if (mMmu.tables_used >= MMU_TABLE_COUNT)
+        return -2;
+    /* Deliberately overwrites: the scanout and UI scratch sit on top of RAM
+     * ranges that are already mapped write-back and must become non-cacheable. */
+    if (map_range(base, size, type, permissions) != 0)
+        return -3;
+    if (mMmu.region_count < MMU_MAX_REGIONS)
+        mMmu.regions[mMmu.region_count++] = (kshim_mmu_region_t){
+            .base = base,
+            .size = size,
+            .type = type,
+            .permissions = permissions,
+        };
+    publish_tables();
+    invalidate_translation();
+    return 0;
+}
+
 void _arm64_mmu_setup(void)
+
 {
     if (!mMmu.configured && kshim_mmu_configure_default(NULL) != 0)
         return;
