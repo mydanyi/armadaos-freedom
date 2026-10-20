@@ -9,6 +9,13 @@
 
 static uint64_t mStageTime[KSHIM_BOOT_STAGE_COUNT];
 static uint32_t mRecorded;
+static uint32_t mMmuEarly[2]; /* enabled, status */
+
+void kshim_boot_metrics_set_mmu(uint32_t Enabled, int32_t Status)
+{
+    mMmuEarly[0] = Enabled;
+    mMmuEarly[1] = (uint32_t)Status;
+}
 
 __attribute__((weak)) uint64_t kshim_boot_metrics_now_ms(void)
 {
@@ -55,6 +62,13 @@ int kshim_boot_metrics_export(void *Fdt)
     if (Status != 0)
         return Status;
     Status = fdt_setprop_u64(Fdt, Chosen, "kshim,boot-entry-counter-ms", Entry);
+    if (Status != 0)
+        return Status;
+    fdt32_t Mmu[2] = {
+        cpu_to_fdt32(mMmuEarly[0]),
+        cpu_to_fdt32(mMmuEarly[1]),
+    };
+    Status = fdt_setprop(Fdt, Chosen, "kshim,mmu-early", Mmu, sizeof(Mmu));
     if (Status != 0)
         return Status;
     return fdt_setprop_u32(Fdt, Chosen, "kshim,boot-timing-version", 1U);

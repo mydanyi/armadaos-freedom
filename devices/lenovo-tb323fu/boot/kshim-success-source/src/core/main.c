@@ -9,6 +9,7 @@
 #include <menu_text.h>
 #include <device_info.h>
 #include <boot_metrics.h>
+#include <kshim_mmu.h>
 #include <dt.h>
 #include <initrd.h>
 #include <qcom_dt.h>
@@ -376,6 +377,21 @@ int kshim_main(
         runtime_fdt = NULL;
         device_tree_address = 0;
     }
+    /* Turn translation on before anything else touches memory.  Up to this
+     * point every fetch, load and store runs uncached and strictly ordered,
+     * which on this platform costs tens of seconds before the menu appears.
+     * kshim_mmu_configure_early() verifies the runtime load base against the
+     * image header first, and a rejected configuration leaves the context
+     * exactly as it was, so translation simply stays off and the previous
+     * behaviour is preserved. */
+    const kshim_mmu_early_config_t early_mmu = {
+        .fdt = runtime_fdt,
+        .payload_base = linux_base,
+        .payload_end = (manifest_address != 0U && manifest_size != 0U)
+            ? manifest_address + manifest_size : 0U,
+    };
+    const int early_mmu_status = kshim_mmu_configure_early(&early_mmu);
+    kshim_boot_metrics_set_mmu(kshim_mmu_is_enabled() ? 1U : 0U, early_mmu_status);
     /* Read-only device info from the already validated runtime DT, collected
      * once here and handed to the menu. A NULL runtime FDT stays all-unknown;
      * there is no extra FDT probing or validation path. */

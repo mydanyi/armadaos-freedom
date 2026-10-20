@@ -154,6 +154,15 @@ _setup_relocation:
     bl do_relocation_rel            // call relocation function
 
 _start_kshim:
+    /* Publish the address this image is actually running from.  The attached
+     * shim is appended to the base image and entered there, so it never runs
+     * at its link address; every MMU mapping must be derived from this. */
+    adrp x9, _start
+    add  x9, x9, :lo12:_start
+    adrp x10, __image_runtime_base__
+    add  x10, x10, :lo12:__image_runtime_base__
+    str  x9, [x10]
+
     mov  x0, x19
     mov  x1, x20
     mov  x2, x21
