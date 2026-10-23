@@ -56,7 +56,18 @@ overlay.
 WCN7850 on PCIe0 (ath12k) and UART14 (btqca). No DT overlay: the board tree
 describes both; the Bluetooth address is cleared by the board overlay.
 
-(added with the Bluetooth and WiFi part)
+- `patches/0301-Bluetooth-btqca-dt-bd-address.patch`
+  source: armada
+  upstream: local
+  notes: On lenovo,tb710fu a non-zero DT local-bd-address replaces the serial-derived address (next to 0223 for Baldur).
+- `patches/0302-power-sequencing-qcom-wcn-reset-pulse.patch`
+  source: https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/kernel/patches/TB710FU-full-tree.diff
+  upstream: unknown
+  notes: Gated on lenovo,tb710fu (unconditional in the original).
+- `patches/0304-wifi-ath12k-wcn7850-workarounds.patch`
+  source: https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/kernel/patches/TB710FU-full-tree.diff
+  upstream: unknown
+  notes: Only what is active on the running unit, gated on lenovo,tb710fu (cached in ath12k_base at allocation, not looked up per packet): CE polling while HTC/WMI wait before the device is registered, firmware log off, STA power save off, hardware-crypto encrypt type. The group-frame IV flags of the original are left out: with the current firmware group frames arrive with their IV (mDNS, DHCP and ARP tested), and mac80211 keeps checking their PN. The periodic CE/DP poller, the A-MPDU refusal, the dedup and reorder switches and the debug counters of the original are left out. board_name is a read-only module parameter; it also names the first regdb lookup, which falls back to the bus name.
 
 ## Speakers
 

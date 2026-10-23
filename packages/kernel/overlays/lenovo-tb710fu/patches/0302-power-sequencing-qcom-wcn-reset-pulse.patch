@@ -1,0 +1,36 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] power: sequencing: qcom-wcn: reset the TB710FU WCN7850 on
+ WLAN enable
+
+The bootloader leaves the WCN7850 powered with its 48 MHz reference
+clock off, so its ROM sits in EDL and MHI never reaches READY.  Hold the
+enable low for a full PMU power cycle (2 ms is not enough) before
+raising it.
+
+From MeteoricmeteorLL/tb710fu-linux.
+---
+ drivers/power/sequencing/pwrseq-qcom-wcn.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/power/sequencing/pwrseq-qcom-wcn.c b/drivers/power/sequencing/pwrseq-qcom-wcn.c
+index e754dc7e8..5d1821978 100644
+--- a/drivers/power/sequencing/pwrseq-qcom-wcn.c
++++ b/drivers/power/sequencing/pwrseq-qcom-wcn.c
+@@ -379,6 +379,16 @@ static int pwrseq_qcom_wcn_wlan_enable(struct pwrseq_device *pwrseq)
+ 	struct pwrseq_qcom_wcn_ctx *ctx = pwrseq_device_get_drvdata(pwrseq);
+ 
+ 	pwrseq_qcom_wcn_ensure_gpio_delay(ctx);
++	/*
++	 * TB710FU: the bootloader leaves the WCN7850 powered with its 48 MHz
++	 * reference clock off, so its ROM sits in EDL and MHI never reaches
++	 * READY.  Hold the enable low long enough for a full PMU power cycle
++	 * (2 ms is not enough) to give the ROM a real reset edge.
++	 */
++	if (of_machine_is_compatible("lenovo,tb710fu")) {
++		gpiod_set_value_cansleep(ctx->wlan_gpio, 0);
++		msleep(100);
++	}
+ 	gpiod_set_value_cansleep(ctx->wlan_gpio, 1);
+ 	ctx->last_gpio_enable_jf = jiffies;
+ 

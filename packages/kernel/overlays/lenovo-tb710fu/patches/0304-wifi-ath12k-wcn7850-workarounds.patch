@@ -1,0 +1,326 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] wifi: ath12k: TB710FU WCN7850 workarounds
+
+From MeteoricmeteorLL/tb710fu-linux, reduced to what is active on the
+running device and gated on lenovo,tb710fu (checked once, when the
+ath12k_base is allocated):
+
+- until the device is registered, HTC/WMI service their copy-engine
+  rings while waiting for the first responses and TX credits (the
+  interrupts do not arrive then);
+- no firmware log: it floods WMI_DIAG events during scans and starves
+  WMI and the HTC credits;
+- STA power save off at association with the related firmware
+  parameters pinned: the host setting never reaches the firmware and
+  buffered unicast came in ~2 s bursts;
+- hardware crypto: set the encrypt type of protected frames, which
+  otherwise went out unencrypted.
+
+A read-only board_name module parameter forces the board-2.bin entry
+name, for the vendor board file; the regdb lookup falls back to the bus
+name as before.  The periodic CE/DP poller and the tuning knobs of the
+original port are left out: they are off on the running device.
+---
+ drivers/net/wireless/ath/ath12k/core.c        | 17 +++++++
+ drivers/net/wireless/ath/ath12k/core.h        |  2 +
+ drivers/net/wireless/ath/ath12k/dp_htt.c      |  4 +-
+ drivers/net/wireless/ath/ath12k/htc.c         | 40 ++++++++++++++++-
+ drivers/net/wireless/ath/ath12k/htc.h         |  4 ++
+ drivers/net/wireless/ath/ath12k/mac.c         | 28 ++++++++++++
+ drivers/net/wireless/ath/ath12k/qmi.c         |  6 ++-
+ drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c | 12 +++++
+ drivers/net/wireless/ath/ath12k/wmi.c         | 45 ++++++++++++++-----
+ 9 files changed, 143 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+index 32d422ae2..d8c2628fb 100644
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -215,10 +215,25 @@ int ath12k_core_resume(struct ath12k_base *ab)
+ }
+ EXPORT_SYMBOL(ath12k_core_resume);
+ 
++/*
++ * TB710FU: the board-2.bin from the vendor firmware uses an entry name that
++ * the generated one does not match, so allow forcing it.
++ */
++static char *ath12k_board_name;
++module_param_named(board_name, ath12k_board_name, charp, 0444);
++MODULE_PARM_DESC(board_name, "Force the board-2.bin entry name (the regdb lookup falls back to the bus name)");
++
+ static int __ath12k_core_create_board_name(struct ath12k_base *ab, char *name,
+ 					   size_t name_len, bool with_variant,
+ 					   bool bus_type_mode, bool with_default)
+ {
++	/* not the bus-type name: the regdb lookup falls back to it */
++	if (!bus_type_mode && ath12k_board_name && ath12k_board_name[0]) {
++		strscpy(name, ath12k_board_name, name_len);
++		ath12k_info(ab, "board name overridden: %s\n", name);
++		return 0;
++	}
++
+ 	/* strlen(',variant=') + strlen(ab->qmi.target.bdf_ext) */
+ 	char variant[9 + ATH12K_QMI_BDF_EXT_STR_LENGTH] = {};
+ 
+@@ -2289,6 +2304,8 @@ struct ath12k_base *ath12k_core_alloc(struct device *dev, size_t priv_size,
+ 	if (!ab)
+ 		return NULL;
+ 
++	ab->tb710fu = of_machine_is_compatible("lenovo,tb710fu");
++
+ 	init_completion(&ab->driver_recovery);
+ 
+ 	ab->workqueue = create_singlethread_workqueue("ath12k_wq");
+diff --git a/drivers/net/wireless/ath/ath12k/core.h b/drivers/net/wireless/ath/ath12k/core.h
+index 06a963749..d0fbf14c3 100644
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -967,6 +967,8 @@ enum ath12k_device_family {
+ /* Master structure to hold the hw data which may be used in core module */
+ struct ath12k_base {
+ 	enum ath12k_hw_rev hw_rev;
++	/* lenovo,tb710fu: board workarounds, checked once at allocation */
++	bool tb710fu;
+ 	struct platform_device *pdev;
+ 	struct device *dev;
+ 	struct ath12k_qmi qmi;
+diff --git a/drivers/net/wireless/ath/ath12k/dp_htt.c b/drivers/net/wireless/ath/ath12k/dp_htt.c
+index 68968f96b..677f0f601 100644
+--- a/drivers/net/wireless/ath/ath12k/dp_htt.c
++++ b/drivers/net/wireless/ath/ath12k/dp_htt.c
+@@ -928,8 +928,8 @@ int ath12k_dp_tx_htt_h2t_ver_req_msg(struct ath12k_base *ab)
+ 		return ret;
+ 	}
+ 
+-	ret = wait_for_completion_timeout(&dp->htt_tgt_version_received,
+-					  HTT_TARGET_VERSION_TIMEOUT_HZ);
++	ret = ath12k_htc_poll_wait_completion(ab, &dp->htt_tgt_version_received,
++					      HTT_TARGET_VERSION_TIMEOUT_HZ);
+ 	if (ret == 0) {
+ 		ath12k_warn(ab, "htt target version request timed out\n");
+ 		return -ETIMEDOUT;
+diff --git a/drivers/net/wireless/ath/ath12k/htc.c b/drivers/net/wireless/ath/ath12k/htc.c
+index 92138caa2..7c64a73a0 100644
+--- a/drivers/net/wireless/ath/ath12k/htc.c
++++ b/drivers/net/wireless/ath/ath12k/htc.c
+@@ -555,6 +555,42 @@ int ath12k_htc_wait_target(struct ath12k_htc *htc)
+ 	return 0;
+ }
+ 
++/*
++ * TB710FU: the WCN7850 copy-engine interrupts do not arrive while HTC/WMI
++ * wait for their first responses, so the waits below service the CE rings
++ * themselves.  Both callers run in process context; serialize them.
++ */
++static DEFINE_MUTEX(ath12k_htc_poll_lock);
++
++void ath12k_htc_poll_ce_all(struct ath12k_base *ab)
++{
++	int i;
++
++	mutex_lock(&ath12k_htc_poll_lock);
++	for (i = 0; i < ab->hw_params->ce_count; i++)
++		ath12k_ce_per_engine_service(ab, i);
++	mutex_unlock(&ath12k_htc_poll_lock);
++}
++
++unsigned long ath12k_htc_poll_wait_completion(struct ath12k_base *ab,
++					      struct completion *done,
++					      unsigned long timeout)
++{
++	unsigned long deadline = jiffies + timeout;
++
++	if (!ab->tb710fu)
++		return wait_for_completion_timeout(done, timeout);
++
++	do {
++		if (wait_for_completion_timeout(done, msecs_to_jiffies(5)))
++			return 1;
++
++		ath12k_htc_poll_ce_all(ab);
++	} while (time_before(jiffies, deadline));
++
++	return 0;
++}
++
+ int ath12k_htc_connect_service(struct ath12k_htc *htc,
+ 			       struct ath12k_htc_svc_conn_req *conn_req,
+ 			       struct ath12k_htc_svc_conn_resp *conn_resp)
+@@ -626,8 +662,8 @@ int ath12k_htc_connect_service(struct ath12k_htc *htc,
+ 	}
+ 
+ 	/* wait for response */
+-	time_left = wait_for_completion_timeout(&htc->ctl_resp,
+-						ATH12K_HTC_CONN_SVC_TIMEOUT_HZ);
++	time_left = ath12k_htc_poll_wait_completion(ab, &htc->ctl_resp,
++						    ATH12K_HTC_CONN_SVC_TIMEOUT_HZ);
+ 	if (!time_left) {
+ 		ath12k_err(ab, "Service connect timeout\n");
+ 		return -ETIMEDOUT;
+diff --git a/drivers/net/wireless/ath/ath12k/htc.h b/drivers/net/wireless/ath/ath12k/htc.h
+index 05b3e5935..9d6f240a3 100644
+--- a/drivers/net/wireless/ath/ath12k/htc.h
++++ b/drivers/net/wireless/ath/ath12k/htc.h
+@@ -304,6 +304,10 @@ struct ath12k_htc {
+ int ath12k_htc_init(struct ath12k_base *ab);
+ int ath12k_htc_wait_target(struct ath12k_htc *htc);
+ int ath12k_htc_start(struct ath12k_htc *htc);
++void ath12k_htc_poll_ce_all(struct ath12k_base *ab);
++unsigned long ath12k_htc_poll_wait_completion(struct ath12k_base *ab,
++					      struct completion *done,
++					      unsigned long timeout);
+ int ath12k_htc_connect_service(struct ath12k_htc *htc,
+ 			       struct ath12k_htc_svc_conn_req  *conn_req,
+ 			       struct ath12k_htc_svc_conn_resp *conn_resp);
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+index df4b6a6d9..3bd3b878d 100644
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4134,6 +4134,34 @@ static void ath12k_bss_assoc(struct ath12k *ar,
+ 		ath12k_warn(ar->ab, "failed to set vdev %i OBSS PD parameters: %d\n",
+ 			    arvif->vdev_id, ret);
+ 
++	/*
++	 * TB710FU: the host power-save setting never reaches the firmware on
++	 * this port, so it keeps its own STA power save and the AP delivers
++	 * buffered unicast only in ~2 s bursts.  Turn it off at association
++	 * and pin the related firmware parameters.
++	 */
++	if (ar->ab->tb710fu &&
++	    ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
++	    ahvif->vdev_subtype == WMI_VDEV_SUBTYPE_NONE) {
++		ret = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id,
++						  WMI_STA_PS_MODE_DISABLED);
++		if (ret)
++			ath12k_warn(ar->ab, "failed to disable STA ps vdev %d: %d\n",
++				    arvif->vdev_id, ret);
++
++		ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
++					    WMI_STA_PS_PARAM_INACTIVITY_TIME, 86400);
++		ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
++					    WMI_STA_PS_PARAM_PSPOLL_COUNT,
++					    WMI_STA_PS_PSPOLL_COUNT_NO_MAX);
++		ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
++					    WMI_STA_PS_PARAM_RX_WAKE_POLICY,
++					    WMI_STA_PS_RX_WAKE_POLICY_WAKE);
++		ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
++					    WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD,
++					    WMI_STA_PS_TX_WAKE_THRESHOLD_ALWAYS);
++	}
++
+ 	if (test_bit(WMI_TLV_SERVICE_11D_OFFLOAD, ar->ab->wmi_ab.svc_map) &&
+ 	    ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
+ 	    ahvif->vdev_subtype == WMI_VDEV_SUBTYPE_NONE)
+diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/ath12k/qmi.c
+index 8634935d4..1349ddd68 100644
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -3726,7 +3726,11 @@ static int ath12k_qmi_wlanfw_wlan_ini_send(struct ath12k_base *ab)
+ 	int ret;
+ 
+ 	req.enable_fwlog_valid = true;
+-	req.enable_fwlog = 1;
++	/*
++	 * TB710FU: the firmware log floods WMI_DIAG events (one per mgmt
++	 * frame during scans), starving WMI and the HTC credits.
++	 */
++	req.enable_fwlog = !ab->tb710fu;
+ 
+ 	ret = qmi_txn_init(&ab->qmi.handle, &txn,
+ 			   qmi_wlanfw_wlan_ini_resp_msg_v01_ei, &resp);
+diff --git a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+index 587d58eec..6f680c964 100644
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -222,6 +222,18 @@ tcl_ring_sel:
+ 	}
+ 
+ 	ti.encap_type = ath12k_dp_tx_get_encap_type(ab, skb);
++
++	/*
++	 * TB710FU: with hardware crypto the encrypt type was never set, so
++	 * protected frames went out unencrypted and the AP dropped them.
++	 */
++	if (ab->tb710fu &&
++	    !test_bit(ATH12K_FLAG_HW_CRYPTO_DISABLED, &ab->dev_flags) &&
++	    !(skb_cb->flags & ATH12K_SKB_HW_80211_ENCAP) &&
++	    (skb_cb->flags & ATH12K_SKB_CIPHER_SET)) {
++		ti.encrypt_type = ath12k_dp_tx_get_encrypt_type(skb_cb->cipher);
++		msdu_ext_desc = true;
++	}
+ 	ti.addr_search_flags = dp_link_vif->hal_addr_search_flags;
+ 	ti.search_type = dp_link_vif->search_type;
+ 	ti.type = HAL_TCL_DESC_TYPE_BUFFER;
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.c b/drivers/net/wireless/ath/ath12k/wmi.c
+index 9493260a4..63c069600 100644
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -418,14 +418,39 @@ int ath12k_wmi_cmd_send(struct ath12k_wmi_pdev *wmi, struct sk_buff *skb,
+ 
+ 	might_sleep();
+ 
+-	wait_event_timeout(wmi_ab->tx_credits_wq, ({
+-		ret = ath12k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
++	/*
++	 * TB710FU: until the device is registered the TX credits only come
++	 * back through CE rings whose interrupts do not arrive yet; retry and
++	 * service the rings instead of waiting for a wakeup.  Once registered
++	 * the interrupt path delivers them, so take the normal wait and do not
++	 * race it.
++	 */
++	if (wmi_ab->ab->tb710fu &&
++	    !test_bit(ATH12K_FLAG_REGISTERED, &wmi_ab->ab->dev_flags)) {
++		unsigned long deadline = jiffies + WMI_SEND_TIMEOUT_HZ;
++
++		do {
++			ret = ath12k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
++
++			if (ret && test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags))
++				ret = -ESHUTDOWN;
+ 
+-		if (ret && test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags))
+-			ret = -ESHUTDOWN;
++			if (ret != -EAGAIN)
++				break;
++
++			ath12k_htc_poll_ce_all(wmi_ab->ab);
++			usleep_range(1000, 2000);
++		} while (time_before(jiffies, deadline));
++	} else {
++		wait_event_timeout(wmi_ab->tx_credits_wq, ({
++			ret = ath12k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
+ 
+-		(ret != -EAGAIN);
+-	}), WMI_SEND_TIMEOUT_HZ);
++			if (ret && test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags))
++				ret = -ESHUTDOWN;
++
++			(ret != -EAGAIN);
++		}), WMI_SEND_TIMEOUT_HZ);
++	}
+ 
+ 	if (ret == -EAGAIN)
+ 		ath12k_warn(wmi_ab->ab, "wmi command %d timeout\n", cmd_id);
+@@ -4365,8 +4390,8 @@ int ath12k_wmi_wait_for_service_ready(struct ath12k_base *ab)
+ {
+ 	unsigned long time_left;
+ 
+-	time_left = wait_for_completion_timeout(&ab->wmi_ab.service_ready,
+-						WMI_SERVICE_READY_TIMEOUT_HZ);
++	time_left = ath12k_htc_poll_wait_completion(ab, &ab->wmi_ab.service_ready,
++						    WMI_SERVICE_READY_TIMEOUT_HZ);
+ 	if (!time_left)
+ 		return -ETIMEDOUT;
+ 
+@@ -4377,8 +4402,8 @@ int ath12k_wmi_wait_for_unified_ready(struct ath12k_base *ab)
+ {
+ 	unsigned long time_left;
+ 
+-	time_left = wait_for_completion_timeout(&ab->wmi_ab.unified_ready,
+-						WMI_SERVICE_READY_TIMEOUT_HZ);
++	time_left = ath12k_htc_poll_wait_completion(ab, &ab->wmi_ab.unified_ready,
++						    WMI_SERVICE_READY_TIMEOUT_HZ);
+ 	if (!time_left)
+ 		return -ETIMEDOUT;
+ 
