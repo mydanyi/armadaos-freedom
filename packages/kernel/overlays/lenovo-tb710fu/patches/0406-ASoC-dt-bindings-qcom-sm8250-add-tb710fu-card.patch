@@ -1,0 +1,21 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] ASoC: dt-bindings: qcom,sm8250: add the Lenovo TB710FU sound
+ card
+
+---
+ Documentation/devicetree/bindings/sound/qcom,sm8250.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml b/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
+index 626dae1fc..ddadd19e6 100644
+--- a/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
++++ b/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
+@@ -32,6 +32,7 @@ properties:
+       - enum:
+           - ayaneo,pocket-s2-sndcard
+           - konkr,pocket-fit-sndcard
++          - lenovo,tb710fu-sndcard
+           - fairphone,fp4-sndcard
+           - fairphone,fp5-sndcard
+           - qcom,apq8096-sndcard

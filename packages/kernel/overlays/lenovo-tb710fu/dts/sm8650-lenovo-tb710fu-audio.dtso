@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Lenovo TB710FU speakers: four Awinic AW882xx smart amplifiers on i2c_hub_4,
+ * fed by TDM1 (SECONDARY_TDM_RX_0, slots 0-3 of an 8 x 32-bit frame), as the
+ * vendor Android configures them.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
+
+&tlmm {
+	tdm1_clk_active: tdm1-clk-active-state {
+		pins = "gpio121"; function = "i2s1_sck"; drive-strength = <8>; bias-disable; output-high;
+	};
+	tdm1_clk_sleep: tdm1-clk-sleep-state {
+		pins = "gpio121"; function = "gpio"; drive-strength = <2>; bias-pull-down; input-enable;
+	};
+	tdm1_ws_active: tdm1-ws-active-state {
+		pins = "gpio123"; function = "i2s1_ws"; drive-strength = <8>; bias-disable; output-high;
+	};
+	tdm1_ws_sleep: tdm1-ws-sleep-state {
+		pins = "gpio123"; function = "gpio"; drive-strength = <2>; bias-pull-down; input-enable;
+	};
+	tdm1_din_active: tdm1-din-active-state {
+		pins = "gpio122"; function = "i2s1_data0"; drive-strength = <8>; bias-disable;
+	};
+	tdm1_din_sleep: tdm1-din-sleep-state {
+		pins = "gpio122"; function = "gpio"; drive-strength = <2>; bias-pull-down; input-enable;
+	};
+	tdm1_dout_active: tdm1-dout-active-state {
+		pins = "gpio124"; function = "i2s1_data1"; drive-strength = <8>; bias-disable;
+	};
+	tdm1_dout_sleep: tdm1-dout-sleep-state {
+		pins = "gpio124"; function = "gpio"; drive-strength = <2>; bias-pull-down; input-enable;
+	};
+};
+
+&i2c_master_hub_0 {
+	status = "okay";
+};
+
+&i2c_hub_4 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	spk_amp0: aw882xx@34 {
+		compatible = "awinic,aw882xx_smartpa"; reg = <0x34>; #sound-dai-cells = <0>;
+		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
+		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <0>;
+		reset-gpios = <&tlmm 9 GPIO_ACTIVE_HIGH>;
+	};
+	spk_amp1: aw882xx@35 {
+		compatible = "awinic,aw882xx_smartpa"; reg = <0x35>; #sound-dai-cells = <0>;
+		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
+		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <1>;
+		reset-gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
+	};
+	spk_amp2: aw882xx@36 {
+		compatible = "awinic,aw882xx_smartpa"; reg = <0x36>; #sound-dai-cells = <0>;
+		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
+		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <2>;
+		reset-gpios = <&tlmm 2 GPIO_ACTIVE_HIGH>;
+	};
+	spk_amp3: aw882xx@37 {
+		compatible = "awinic,aw882xx_smartpa"; reg = <0x37>; #sound-dai-cells = <0>;
+		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
+		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <3>;
+		reset-gpios = <&tlmm 60 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&{/} {
+	sound {
+		compatible = "lenovo,tb710fu-sndcard";
+		model = "Lenovo-TB710FU";
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&tdm1_clk_active &tdm1_ws_active &tdm1_din_active &tdm1_dout_active>;
+		pinctrl-1 = <&tdm1_clk_sleep &tdm1_ws_sleep &tdm1_din_sleep &tdm1_dout_sleep>;
+
+		aw-spk-dai-link {
+			link-name = "AW882xx Playback";
+			cpu {
+				sound-dai = <&q6apmbedai SECONDARY_TDM_RX_0>;
+				dai-tdm-slot-num = <8>;
+				dai-tdm-slot-width = <32>;
+				dai-tdm-slot-rx-mask = <1 1 1 1 0 0 0 0>;
+			};
+			codec {
+				sound-dai = <&spk_amp0>, <&spk_amp1>, <&spk_amp2>, <&spk_amp3>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
+};

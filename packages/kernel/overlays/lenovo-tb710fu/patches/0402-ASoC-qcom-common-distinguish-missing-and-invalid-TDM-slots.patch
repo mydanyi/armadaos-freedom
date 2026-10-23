@@ -1,0 +1,51 @@
+From: Prasad Kumpatla <prasad.kumpatla@oss.qualcomm.com>
+Date: Tue, 18 Aug 2026 14:16:54 +0530
+Subject: [PATCH] ASoC: qcom: common: Distinguish missing and invalid TDM slot
+ configuration
+
+qcom_snd_parse_dai_tdm_slots() uses -EINVAL for both missing DAI-link
+TDM configuration and malformed TDM slot properties. As a result,
+qcom_snd_apply_dai_tdm_slots() silently ignores configuration errors.
+
+Return -ENOENT for missing DAI-link configuration and preserve -EINVAL
+for malformed TDM slot properties.
+
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Link: https://sashiko.dev/#/patchset/20260804070307.117119-1-prasad.kumpatla@oss.qualcomm.com
+Signed-off-by: Prasad Kumpatla <prasad.kumpatla@oss.qualcomm.com>
+Link: https://patch.msgid.link/20260818084655.3240284-4-prasad.kumpatla@oss.qualcomm.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ sound/soc/qcom/common.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/qcom/common.c b/sound/soc/qcom/common.c
+index 6ab4af71e..c413d5e90 100644
+--- a/sound/soc/qcom/common.c
++++ b/sound/soc/qcom/common.c
+@@ -103,14 +103,14 @@ static int qcom_snd_parse_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd,
+ 	int ret;
+ 
+ 	if (!link_np)
+-		return -EINVAL;
++		return -ENOENT;
+ 
+ 	struct device_node *cpu_np __free(device_node) =
+ 		of_get_child_by_name(link_np, "cpu");
+ 	struct device_node *codec_np __free(device_node) =
+ 		of_get_child_by_name(link_np, "codec");
+ 	if (!cpu_np || !codec_np)
+-		return -EINVAL;
++		return -ENOENT;
+ 
+ 	ret = qcom_snd_parse_tdm_slot(cpu_np, cpu_cfg);
+ 	if (ret)
+@@ -172,7 +172,7 @@ int qcom_snd_apply_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd)
+ 
+ 	ret = qcom_snd_get_dai_tdm_slots(rtd, &cpu_cfg, &codec_cfg);
+ 	if (ret)
+-		return ret == -EINVAL ? 0 : ret;
++		return ret == -ENOENT ? 0 : ret;
+ 
+ 	return qcom_snd_apply_dai_tdm_slots_cfg(rtd, &cpu_cfg, &codec_cfg);
+ }

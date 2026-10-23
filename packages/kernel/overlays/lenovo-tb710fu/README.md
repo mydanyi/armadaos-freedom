@@ -19,6 +19,12 @@ The kernel release gets `-armada-tb710fu`. The DTB to boot is
 | Bluetooth and WiFi | `03xx` | — | — |
 | Speakers | `04xx` | `sm8650-lenovo-tb710fu-audio.dtso` | — |
 
+The speakers also need, at run time: an AudioReach topology whose speaker
+endpoint is the TDM sink (0x0700100E; the original port's topology uses an
+I2S sink), the amplifiers' `aw882xx_acf.bin`, and a 16-bit front end
+(24-bit input crashes the ADSP audio process).  See
+`devices/lenovo-tb710fu/` for the files and mixer settings.
+
 Board-specific code paths are additionally gated on `lenovo,tb710fu` (or the
 `lenovo,tb710fu-sndcard` / `novatek,nt36532-ts-spi` compatibles). Sources and
 notes per patch: [PATCHES.md](PATCHES.md). Device status, firmware and boot

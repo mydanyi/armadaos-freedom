@@ -1,0 +1,117 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] ASoC: qcom: q6apm-lpass-dais: add TDM DAI operations
+
+set_tdm_slot() stores the slot count, width and mask in the module
+config for the endpoint.  Adapted from upstream commit 4d0840175893
+("ASoC: qcom: q6apm-lpass-dais: add TDM DAI operations") by Prasad
+Kumpatla <prasad.kumpatla@oss.qualcomm.com> to this tree, which has no
+MI2S clock control (no set_sysclk), and also records the TDM interface
+derived from the DAI id.
+---
+ sound/soc/qcom/qdsp6/audioreach.h       |  5 ++
+ sound/soc/qcom/qdsp6/q6apm-lpass-dais.c | 61 +++++++++++++++++++++++++
+ 2 files changed, 66 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/audioreach.h b/sound/soc/qcom/qdsp6/audioreach.h
+index 62a2fd79b..0864d23c6 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.h
++++ b/sound/soc/qcom/qdsp6/audioreach.h
+@@ -907,6 +907,11 @@ struct audioreach_module_config {
+ 	u32	channel_allocation;
+ 	u32	sd_line_mask;
+ 	int	fmt;
++	/* TDM interface and slots, from set_tdm_slot() */
++	u16	tdm_intf_idx;
++	u16	nslots_per_frame;
++	u16	slot_width;
++	u32	slot_mask;
+ 	struct snd_codec codec;
+ 	u8 channel_map[AR_PCM_MAX_NUM_CHANNEL];
+ };
+diff --git a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+index ae4dc54c5..11da55969 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
++++ b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+@@ -316,6 +316,56 @@ static int q6i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+ 	return 0;
+ }
+ 
++static int q6tdm_set_tdm_slot(struct snd_soc_dai *dai,
++			      unsigned int tx_mask,
++			      unsigned int rx_mask,
++			      int slots, int slot_width)
++{
++	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
++	struct audioreach_module_config *cfg = &dai_data->module_config[dai->id];
++	unsigned int cap_mask, slot_mask;
++
++	if (slot_width != 16 && slot_width != 32) {
++		dev_err(dai->dev, "%s: invalid slot_width %d\n", __func__, slot_width);
++		return -EINVAL;
++	}
++
++	switch (slots) {
++	case 2:
++	case 4:
++	case 8:
++	case 16:
++		cap_mask = GENMASK(slots - 1, 0);
++		break;
++	default:
++		dev_err(dai->dev, "%s: invalid slots %d\n", __func__, slots);
++		return -EINVAL;
++	}
++
++	switch (dai->id) {
++	case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
++		slot_mask = (dai->id & 0x1) ? tx_mask : rx_mask;
++		if (slot_mask & ~cap_mask) {
++			dev_err(dai->dev, "%s: invalid slot mask 0x%x for %d slots\n",
++				__func__, slot_mask, slots);
++			return -EINVAL;
++		}
++
++		dai_data->is_restored[dai->id] = false;
++		/* 16 DAI ids (RX/TX 0..7) per TDM interface */
++		cfg->tdm_intf_idx = (dai->id - PRIMARY_TDM_RX_0) / 16;
++		cfg->nslots_per_frame = slots;
++		cfg->slot_width = slot_width;
++		cfg->slot_mask = slot_mask;
++		break;
++	default:
++		dev_err(dai->dev, "%s: invalid dai id 0x%x\n", __func__, dai->id);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+ static const struct snd_soc_dai_ops q6dma_ops = {
+ 	.prepare	= q6apm_lpass_dai_prepare,
+ 	.startup	= q6apm_lpass_dai_startup,
+@@ -344,6 +394,16 @@ static const struct snd_soc_dai_ops q6hdmi_ops = {
+ 	.trigger	= q6apm_lpass_dai_trigger,
+ };
+ 
++static const struct snd_soc_dai_ops q6tdm_ops = {
++	.prepare	= q6apm_lpass_dai_prepare,
++	.startup	= q6apm_lpass_dai_startup,
++	.shutdown	= q6apm_lpass_dai_shutdown,
++	.set_tdm_slot	= q6tdm_set_tdm_slot,
++	.hw_params	= q6dma_hw_params,
++	.set_fmt	= q6i2s_set_fmt,
++	.trigger	= q6apm_lpass_dai_trigger,
++};
++
+ static int q6apm_lpass_dai_suspend(struct snd_soc_component *component)
+ {
+ 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(component->dev);
+@@ -424,6 +484,7 @@ static int q6apm_lpass_dai_dev_probe(struct platform_device *pdev)
+ 	cfg.q6i2s_ops = &q6i2s_ops;
+ 	cfg.q6dma_ops = &q6dma_ops;
+ 	cfg.q6hdmi_ops = &q6hdmi_ops;
++	cfg.q6tdm_ops = &q6tdm_ops;
+ 	dais = q6dsp_audio_ports_set_config(dev, &cfg, &num_dais);
+ 
+ 	return devm_snd_soc_register_component(dev, &q6apm_lpass_dai_component, dais, num_dais);

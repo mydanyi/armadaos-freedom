@@ -64,4 +64,31 @@ Four Awinic AW882xx amplifiers on i2c_hub_4 fed by SECONDARY_TDM_RX_0
 (8 x 32-bit slots, slots 0-3). The amplifier driver is the shared
 out-of-tree aw882xx.
 
-(added with the speaker part)
+- `patches/0401-ASoC-qcom-common-add-DAI-node-TDM-slot-helpers.patch`
+  source: https://git.kernel.org/torvalds/c/1e844ecbc9cb
+  upstream: https://git.kernel.org/torvalds/c/1e844ecbc9cb
+- `patches/0402-ASoC-qcom-common-distinguish-missing-and-invalid-TDM-slots.patch`
+  source: https://git.kernel.org/torvalds/c/0a9e00d5ebdf
+  upstream: https://git.kernel.org/torvalds/c/0a9e00d5ebdf
+- `patches/0403-ASoC-qcom-q6apm-lpass-dais-add-TDM-DAI-operations.patch`
+  source: https://git.kernel.org/torvalds/c/4d0840175893
+  upstream: local (adapted from 4d0840175893 by Prasad Kumpatla)
+  notes: Rewritten for this tree, which has no MI2S clock control (no set_sysclk); also records the TDM interface derived from the DAI id.
+- `patches/0404-ASoC-qcom-audioreach-configure-TDM-sink-endpoint.patch`
+  source: armada
+  upstream: local
+  notes: MODULE_ID_TDM_SINK with PARAM_ID_TDM_INTF_CFG, matching what the vendor AudioReach userspace sends on TB710FU (traced on the unit); replaces the original port's full 7.3 sound/soc/qcom backport. Needs a topology whose speaker endpoint is MODULE_ID_TDM_SINK (0x0700100E); a topology with I2S_SINK never reaches this code.
+- `patches/0405-ASoC-qcom-q6apm-four-speakers.patch`
+  source: armada
+  upstream: local
+  notes: On lenovo,tb710fu the stream MFC/data-logging modules run at 4ch/S32 and the MFC maps FL FR FL FR, so the stereo stream reaches all four TDM slots. This applies to every MFC on the board; the card has the speaker link only, and a capture or second playback link would have to narrow it.
+- `patches/0406-ASoC-dt-bindings-qcom-sm8250-add-tb710fu-card.patch`
+  source: armada
+  upstream: local
+- `patches/0407-ASoC-qcom-sc8280xp-add-tb710fu-card.patch`
+  source: armada
+  upstream: local
+  notes: TDM BE fixup (4ch/S32) and DSP_B/IB_NF CPU format for `lenovo,tb710fu-sndcard` only. The TDM endpoint has no bit-clock inversion setting, so IB_NF is sent as plain DSP_B; the values match what the vendor userspace programs.
+- `dts/sm8650-lenovo-tb710fu-audio.dtso`
+  source: armada
+  notes: TDM1 pins, the four amplifiers (reset GPIOs, sound channels) and the sound card, as on the vendor Android.

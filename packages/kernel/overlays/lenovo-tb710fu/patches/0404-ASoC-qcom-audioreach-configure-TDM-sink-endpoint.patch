@@ -1,0 +1,185 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] ASoC: qcom: audioreach: configure the TDM sink endpoint
+
+MODULE_ID_TDM_SINK gets PARAM_ID_TDM_INTF_CFG (interface, sync source,
+slots, sync mode/inversion/delay from the DAI format), the media format
+and the frame size factor.  This is how the vendor AudioReach userspace
+configures the TB710FU speaker TDM (traced on the device); only the sink
+direction and DSP_A/DSP_B framing are handled.
+
+The TDM interface comes from the DAI (stored by set_tdm_slot()), as the
+topology may not carry it.
+---
+ sound/soc/qcom/qdsp6/audioreach.c | 103 ++++++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/audioreach.h |  22 +++++++
+ 2 files changed, 125 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/audioreach.c b/sound/soc/qcom/qdsp6/audioreach.c
+index 00550dd90..5f31cd93d 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -153,6 +153,13 @@ struct apm_i2s_module_intf_cfg {
+ 
+ #define APM_I2S_INTF_CFG_PSIZE ALIGN(sizeof(struct apm_i2s_module_intf_cfg), 8)
+ 
++struct apm_tdm_module_intf_cfg {
++	struct apm_module_param_data param_data;
++	struct param_id_tdm_intf_cfg cfg;
++} __packed;
++
++#define APM_TDM_INTF_CFG_PSIZE ALIGN(sizeof(struct apm_tdm_module_intf_cfg), 8)
++
+ struct apm_module_hw_ep_mf_cfg {
+ 	struct apm_module_param_data param_data;
+ 	struct param_id_hw_ep_mf mf;
+@@ -1384,6 +1391,99 @@ static int audioreach_speaker_protection_vi(struct q6apm_graph *graph,
+ 	return rc;
+ }
+ 
++/*
++ * TDM hardware endpoint, configured like the vendor's AudioReach userspace
++ * does on TB710FU: PARAM_ID_TDM_INTF_CFG, media format and frame size factor.
++ * Only the transmit (sink) direction and DSP_A/DSP_B framing are handled.
++ */
++static int audioreach_tdm_set_media_format(struct q6apm_graph *graph,
++					   const struct audioreach_module *module,
++					   const struct audioreach_module_config *cfg)
++{
++	struct apm_module_frame_size_factor_cfg *fs_cfg;
++	struct apm_module_param_data *param_data;
++	struct apm_tdm_module_intf_cfg *intf_cfg;
++	struct apm_module_hw_ep_mf_cfg *hw_cfg;
++	int ic_sz = APM_TDM_INTF_CFG_PSIZE;
++	int ep_sz = APM_HW_EP_CFG_PSIZE;
++	int fs_sz = APM_FS_CFG_PSIZE;
++	int size = ic_sz + ep_sz + fs_sz;
++	void *p;
++
++	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(size, APM_CMD_SET_CFG, 0);
++	if (IS_ERR(pkt))
++		return PTR_ERR(pkt);
++
++	p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
++	intf_cfg = p;
++
++	param_data = &intf_cfg->param_data;
++	param_data->module_instance_id = module->instance_id;
++	param_data->error_code = 0;
++	param_data->param_id = PARAM_ID_TDM_INTF_CFG;
++	param_data->param_size = sizeof(intf_cfg->cfg);
++
++	intf_cfg->cfg.lpaif_type = module->hw_interface_type;
++	intf_cfg->cfg.ctrl_data_out_enable = 1;
++
++	if ((cfg->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) == SND_SOC_DAIFMT_BC_FC)
++		intf_cfg->cfg.sync_src = CONFIG_TDM_SYNC_SRC_EXTERNAL;
++	else
++		intf_cfg->cfg.sync_src = CONFIG_TDM_SYNC_SRC_INTERNAL;
++
++	/* the interface follows the DAI; topologies may not carry it */
++	if (cfg->nslots_per_frame) {
++		intf_cfg->cfg.intf_idx = cfg->tdm_intf_idx;
++		intf_cfg->cfg.nslots_per_frame = cfg->nslots_per_frame;
++		intf_cfg->cfg.slot_width = cfg->slot_width;
++		intf_cfg->cfg.slot_mask = cfg->slot_mask;
++	} else {
++		intf_cfg->cfg.intf_idx = module->hw_interface_idx;
++		intf_cfg->cfg.nslots_per_frame = cfg->num_channels;
++		intf_cfg->cfg.slot_width = cfg->bit_width;
++		intf_cfg->cfg.slot_mask = GENMASK(cfg->num_channels - 1, 0);
++	}
++
++	intf_cfg->cfg.sync_mode = CONFIG_TDM_SHORT_SYNC_BIT_MODE;
++	switch (cfg->fmt & SND_SOC_DAIFMT_INV_MASK) {
++	case SND_SOC_DAIFMT_NB_IF:
++	case SND_SOC_DAIFMT_IB_IF:
++		intf_cfg->cfg.ctrl_invert_sync_pulse = 1;
++		break;
++	default:
++		break;
++	}
++	if ((cfg->fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_DSP_A)
++		intf_cfg->cfg.ctrl_sync_data_delay = CONFIG_TDM_SYNC_DATA_DELAY_1_BIT;
++	else
++		intf_cfg->cfg.ctrl_sync_data_delay = CONFIG_TDM_SYNC_DATA_DELAY_0_BIT;
++
++	p += ic_sz;
++	hw_cfg = p;
++	param_data = &hw_cfg->param_data;
++	param_data->module_instance_id = module->instance_id;
++	param_data->error_code = 0;
++	param_data->param_id = PARAM_ID_HW_EP_MF_CFG;
++	param_data->param_size = ep_sz - APM_MODULE_PARAM_DATA_SIZE;
++
++	hw_cfg->mf.sample_rate = cfg->sample_rate;
++	hw_cfg->mf.bit_width = cfg->bit_width;
++	hw_cfg->mf.num_channels = cfg->num_channels;
++	/* topologies may not carry it for this module: PCM is fixed point */
++	hw_cfg->mf.data_format = module->data_format ?: DATA_FORMAT_FIXED_POINT;
++
++	p += ep_sz;
++	fs_cfg = p;
++	param_data = &fs_cfg->param_data;
++	param_data->module_instance_id = module->instance_id;
++	param_data->error_code = 0;
++	param_data->param_id = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
++	param_data->param_size = fs_sz - APM_MODULE_PARAM_DATA_SIZE;
++	fs_cfg->frame_size_factor = 1;
++
++	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
++}
++
+ int audioreach_set_media_format(struct q6apm_graph *graph,
+ 				const struct audioreach_module *module,
+ 				const struct audioreach_module_config *cfg)
+@@ -1413,6 +1513,9 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
+ 	case MODULE_ID_I2S_SINK:
+ 		rc = audioreach_i2s_set_media_format(graph, module, cfg);
+ 		break;
++	case MODULE_ID_TDM_SINK:
++		rc = audioreach_tdm_set_media_format(graph, module, cfg);
++		break;
+ 	case MODULE_ID_WR_SHARED_MEM_EP:
+ 	case MODULE_ID_SH_MEM_PULL_MODE:
+ 		rc = audioreach_shmem_set_media_format(graph, module, cfg);
+diff --git a/sound/soc/qcom/qdsp6/audioreach.h b/sound/soc/qcom/qdsp6/audioreach.h
+index 0864d23c6..3b6d0833e 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.h
++++ b/sound/soc/qcom/qdsp6/audioreach.h
+@@ -22,6 +22,7 @@ struct q6apm_graph;
+ #define MODULE_ID_PLACEHOLDER_DECODER	0x07001009
+ #define MODULE_ID_I2S_SINK		0x0700100A
+ #define MODULE_ID_I2S_SOURCE		0x0700100B
++#define MODULE_ID_TDM_SINK		0x0700100E
+ #define MODULE_ID_SAL			0x07001010
+ #define MODULE_ID_MFC			0x07001015
+ #define MODULE_ID_DATA_LOGGING		0x0700101A
+@@ -530,6 +531,27 @@ struct param_id_i2s_intf_cfg {
+ 	uint16_t ws_src;
+ } __packed;
+ 
++#define PARAM_ID_TDM_INTF_CFG			0x0800101B
++struct param_id_tdm_intf_cfg {
++	uint32_t lpaif_type;
++	uint32_t intf_idx;
++	uint16_t sync_src;
++	uint16_t ctrl_data_out_enable;
++	uint32_t slot_mask;
++	uint16_t nslots_per_frame;
++	uint16_t slot_width;
++	uint16_t sync_mode;
++	uint16_t ctrl_invert_sync_pulse;
++	uint16_t ctrl_sync_data_delay;
++	uint16_t reserved;
++} __packed;
++
++#define CONFIG_TDM_SYNC_SRC_EXTERNAL		0x0
++#define CONFIG_TDM_SYNC_SRC_INTERNAL		0x1
++#define CONFIG_TDM_SHORT_SYNC_BIT_MODE		0x0
++#define CONFIG_TDM_SYNC_DATA_DELAY_0_BIT	0x0
++#define CONFIG_TDM_SYNC_DATA_DELAY_1_BIT	0x1
++
+ #define I2S_INTF_TYPE_PRIMARY		0
+ #define I2S_INTF_TYPE_SECONDARY		1
+ #define I2S_INTF_TYPE_TERTIARY		2
