@@ -307,8 +307,12 @@ int dt_reservations(const void *f, struct dt_range *ranges, bool *no_map,
         for (int i = 0; i < len / (4 * (ac + sc)); ++i) {
             uint64_t base, size;
             if (dt_raw_reg(f, node, (unsigned)i, &base, &size)) return -1;
-            /* skip unallocated firmware reserved-memory placeholders (base==size==0) */
-            if (base == 0 && size == 0) continue;
+            /* skip unallocated firmware reserved-memory placeholders (base==size==0);
+             * SM8650 (qcom,pineapple) also carries size-0 nodes with a nonzero
+             * base (e.g. mpss_dsm_region@86b00000) that reserve nothing. */
+            if (size == 0 && (base == 0 ||
+                              fdt_node_check_compatible(f, 0, "qcom,pineapple") == 0))
+                continue;
             if (*count == capacity || dt_reg(f, node, i, &ranges[*count])) return -1;
             no_map[(*count)++] = flag;
         }

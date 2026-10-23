@@ -86,6 +86,9 @@ typedef struct {
 static translation_table_t mTables[MMU_TABLE_COUNT]
     __attribute__((aligned(MMU_PAGE_SIZE), section(".mmu_tables")));
 static mmu_context_t mMmu;
+/* SM8650 (qcom,pineapple): also clean read-only write-back regions at
+ * handoff, see kshim_mmu_prepare_handoff(). */
+static uint8_t mCleanReadOnly;
 
 extern unsigned char __image_start_address__[];
 extern unsigned char __image_end_address__[];
@@ -466,6 +469,8 @@ int kshim_mmu_configure(const kshim_mmu_config_t *config)
         image_end <= image_base)
         return -1;
 
+    mCleanReadOnly = config->fdt != NULL &&
+        fdt_node_check_compatible(config->fdt, 0, "qcom,pineapple") == 0;
     memset(&mMmu, 0, sizeof(mMmu));
     memset(mTables, 0, sizeof(mTables));
     mMmu.root = allocate_table();
@@ -638,9 +643,13 @@ int kshim_mmu_prepare_handoff(void)
 {
     if (!mMmu.configured)
         return 0;
+    /* On SM8650 the FDT can be mapped read-only for the menu and edited
+     * after the MMU is off; the next kernel would then see the stale clean
+     * lines, so read-only write-back regions are cleaned there too.  The
+     * early configuration records its writable DT mapping for the same reason. */
     for (size_t index = 0; index < mMmu.region_count; index++) {
         if (mMmu.regions[index].type == KSHIM_MMU_NORMAL_WB &&
-            (mMmu.regions[index].permissions & KSHIM_MMU_WRITE))
+            ((mMmu.regions[index].permissions & KSHIM_MMU_WRITE) || mCleanReadOnly))
             clean_range(mMmu.regions[index].base, mMmu.regions[index].size);
     }
 #if defined(__aarch64__)
@@ -751,6 +760,8 @@ int kshim_mmu_configure_early(const kshim_mmu_early_config_t *config)
     if (mImageBaseVerified == 0)
         return -3;
 
+    mCleanReadOnly = config->fdt != NULL &&
+        fdt_node_check_compatible(config->fdt, 0, "qcom,pineapple") == 0;
     memset(&mMmu, 0, sizeof(mMmu));
     memset(mTables, 0, sizeof(mTables));
     mMmu.root = allocate_table();
@@ -792,8 +803,17 @@ int kshim_mmu_configure_early(const kshim_mmu_early_config_t *config)
             status = -9;
             goto failed;
         }
+        /* SM8650: the runtime writes probe reports into this DT through the
+         * cache; record it so kshim_mmu_prepare_handoff() cleans it. */
+        if (mCleanReadOnly && dt_size != 0U)
+            mMmu.regions[mMmu.region_count++] = (kshim_mmu_region_t){
+                .base = dt_base,
+                .size = dt_size,
+                .type = KSHIM_MMU_NORMAL_WB,
+                .permissions = KSHIM_MMU_READ | KSHIM_MMU_WRITE,
+            };
     }
-    /* Only the image is written through the cache by this runtime. */
+    /* Elsewhere only the image is written through the cache by this runtime. */
     mMmu.regions[mMmu.region_count++] = (kshim_mmu_region_t){
         .base = image_base,
         .size = image_span,

@@ -51,7 +51,9 @@ int kshim_qcom_reboot_parse(const void *fdt,
     if (fdt_node_check_compatible(fdt, 0, "qcom,canoep") &&
         fdt_node_check_compatible(fdt, 0, "lenovo,tb323fu") &&
         fdt_node_check_compatible(fdt, 0, "lenovo,baldur") &&
-        fdt_node_check_compatible(fdt, 0, "qcom,sunp"))
+        fdt_node_check_compatible(fdt, 0, "qcom,sunp") &&
+        /* TB710FU (SM8650): same SCM dload + SDAM restart_reason DT ABI. */
+        fdt_node_check_compatible(fdt, 0, "qcom,pineapple"))
         return KSHIM_QCOM_REBOOT_UNSUPPORTED;
 
     int scm = unique_compatible(fdt, "qcom,scm");

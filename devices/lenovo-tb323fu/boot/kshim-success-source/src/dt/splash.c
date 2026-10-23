@@ -206,6 +206,121 @@ int kshim_dt_splash_reservation(const void *f, struct dt_range *memory, bool *no
     if (no_map) *no_map = fdt_getprop(f, found, "no-map", NULL) != NULL;
     return 0;
 }
+/* TB710FU / SM8650: ABL scans one linear framebuffer out through several
+ * VIG/DMA pipes side by side (measured: 4 x VIG 800x2000 from 0xd5100000,
+ * stride 12800, ARGB-family 0x237ff), one LM per pipe.  Take the SSPPs that
+ * an active CTL stages on any of its mixers and require that they tile one
+ * contiguous WxH buffer: same base/stride/format/unpack/height, x offsets
+ * 0..W without gaps, buffer inside cont_splash_region.  Pipes left
+ * programmed but not staged are ignored.  Routing and pipes are read twice;
+ * any change -> CR_BUS_AGAIN.  Read-only. */
+struct tb710fu_pipe { uint32_t src, xy, out_xy, addr, stride, format, unpack, op; };
+static int tb710fu_read_pipes(const struct CrSplashResources *r, const struct CrIo *io,
+                              struct tb710fu_pipe *pp)
+{
+    for (unsigned p = 0; p < r->pipe_count; ++p) {
+        uint64_t b = r->base + r->pipe[p];
+        pp[p] = (struct tb710fu_pipe){
+            .src = io->read32(io->context, (uintptr_t)(b + 0x00)),
+            .xy = io->read32(io->context, (uintptr_t)(b + 0x08)),
+            .out_xy = io->read32(io->context, (uintptr_t)(b + 0x10)),
+            .addr = io->read32(io->context, (uintptr_t)(b + 0x14)),
+            .stride = io->read32(io->context, (uintptr_t)(b + 0x24)),
+            .format = io->read32(io->context, (uintptr_t)(b + 0x30)),
+            .unpack = io->read32(io->context, (uintptr_t)(b + 0x34)),
+            .op = io->read32(io->context, (uintptr_t)(b + 0x38))};
+    }
+    return 0;
+}
+/* Pipe ids (r->pipe_id numbering) staged on an active CTL, legacy CTL layer
+ * routing as in active_legacy(): VIG0-3 and DMA0-1 in CTL_LAYER(m) plus the
+ * CTL_LAYER_EXT overflow bits, DMA2-5 in CTL_LAYER_EXT2.  Multirect
+ * (CTL_LAYER_EXT3) is not decoded and is refused. */
+static int tb710fu_staged_pipes(const struct CrSplashResources *r, const struct CrIo *io,
+                                unsigned *ids)
+{
+    static const unsigned shift[] = {0, 3, 6, 26, 18, 21};
+    static const unsigned ext_shift[] = {0, 2, 4, 6, 16, 18};
+    *ids = 0;
+    for (unsigned c = 0; c < r->ctl_count; ++c) {
+        uint64_t b = r->base + r->ctl[c];
+        if (!io->read32(io->context, (uintptr_t)(b + 0xf4)) &&
+            !(io->read32(io->context, (uintptr_t)(b + 0x14)) & 15)) continue;
+        for (unsigned m = 0; m < r->mixer_count; ++m) {
+            uint32_t layer = io->read32(io->context, (uintptr_t)(b + (m == 5 ? 0x24 : m * 4)));
+            uint32_t ext = io->read32(io->context, (uintptr_t)(b + 0x40 + m * 4));
+            uint32_t ext2 = io->read32(io->context, (uintptr_t)(b + 0x70 + m * 4));
+            uint32_t ext3 = io->read32(io->context, (uintptr_t)(b + 0xa0 + m * 4));
+            if (ext3) return CR_BUS_UNSUPPORTED;
+            for (unsigned id = 0; id < 10; ++id) {
+                bool used = id < 6 ? ((layer >> shift[id]) & 7) || ((ext >> ext_shift[id]) & 1)
+                                   : ((ext2 >> ((id - 6) * 4)) & 15);
+                if (used) *ids |= 1u << id;
+            }
+        }
+    }
+    return 0;
+}
+static int tb710fu_splash_read(const struct CrSplashResources *r, const struct CrIo *io,
+                               struct CrSplash *fb)
+{
+    struct tb710fu_pipe a[10], b[10];
+    if (!io || !io->read32 || r->pipe_count == 0 || r->pipe_count > 10) return CR_BUS_INVALID;
+    for (unsigned p = 0; p < r->pipe_count; ++p)
+        if ((r->pipe[p] & 3) || (uint64_t)r->pipe[p] + 0x3c > r->size) return CR_BUS_INVALID;
+    if (r->ctl_count == 0 || r->mixer_count == 0 || r->mixer_count > 6) return CR_BUS_INVALID;
+    for (unsigned c = 0; c < r->ctl_count; ++c)
+        if ((r->ctl[c] & 3) || (uint64_t)r->ctl[c] + 0xf8 > r->size) return CR_BUS_INVALID;
+    for (unsigned p = 0; p < r->pipe_count; ++p)
+        if (r->pipe_id[p] >= 10) return CR_BUS_INVALID;
+    unsigned ids, ids_again;
+    int rs = tb710fu_staged_pipes(r, io, &ids);
+    if (rs) return rs;
+    if (!ids) return CR_BUS_UNSUPPORTED;
+    tb710fu_read_pipes(r, io, a);
+    int first = -1; unsigned used = 0, width = 0, h = 0, bpp = 4;
+    unsigned nseg = 0; uint32_t seg_x[10], seg_w[10];
+    for (unsigned p = 0; p < r->pipe_count; ++p) {
+        const struct tb710fu_pipe *s = &a[p];
+        if (!(ids & (1u << r->pipe_id[p]))) continue;
+        if (!s->src || !s->addr) return CR_BUS_UNSUPPORTED;
+        if (first < 0) first = (int)p;
+        const struct tb710fu_pipe *f0 = &a[first];
+        if (s->addr != f0->addr || s->stride != f0->stride || s->format != f0->format ||
+            s->unpack != f0->unpack || (s->src >> 16) != (f0->src >> 16) ||
+            (s->xy >> 16) || (s->op & ~((1u << 31) | (1u << 4)))) return CR_BUS_UNSUPPORTED;
+        seg_x[nseg] = s->xy & 0xffff; seg_w[nseg] = s->src & 0xffff; ++nseg;
+        width += s->src & 0xffff; ++used;
+    }
+    if (first < 0 || used == 0) return CR_BUS_UNSUPPORTED;
+    /* segments must tile [0, width) exactly */
+    for (unsigned x = 0; x < width;) {
+        unsigned k;
+        for (k = 0; k < nseg; ++k) if (seg_x[k] == x) break;
+        if (k == nseg || seg_w[k] == 0) return CR_BUS_UNSUPPORTED;
+        x += seg_w[k];
+    }
+    const struct tb710fu_pipe *f0 = &a[first];
+    enum CrSplashFormat fmt;
+    uint32_t v = f0->format & ~(1u << 8);
+    if (v != 0x236ff) return CR_BUS_UNSUPPORTED;
+    if (f0->unpack == 0x03020001) fmt = (f0->format & 256) ? CR_SPLASH_ARGB8888 : CR_SPLASH_XRGB8888;
+    else if (f0->unpack == 0x03010002) fmt = (f0->format & 256) ? CR_SPLASH_ABGR8888 : CR_SPLASH_XBGR8888;
+    else return CR_BUS_UNSUPPORTED;
+    h = f0->src >> 16;
+    uint32_t stride = f0->stride & 0xffff;
+    if (!h || h > 8192 || !width || width > 8192 || (uint64_t)width * bpp > stride) return CR_BUS_INVALID;
+    uint64_t size = (uint64_t)stride * h;
+    if (!r->reserved_size || f0->addr < r->reserved_base ||
+        (uint64_t)f0->addr + size > r->reserved_base + r->reserved_size) return CR_BUS_INVALID;
+    tb710fu_read_pipes(r, io, b);
+    for (unsigned p = 0; p < r->pipe_count; ++p)
+        if (memcmp(&a[p], &b[p], sizeof(a[p]))) return CR_BUS_AGAIN;
+    if (tb710fu_staged_pipes(r, io, &ids_again) || ids_again != ids) return CR_BUS_AGAIN;
+    *fb = (struct CrSplash){.address = f0->addr, .size = (size_t)size, .width = width,
+                           .height = h, .stride = stride, .format = fmt};
+    return 0;
+}
 int kshim_dt_splash(const void *f, const struct CrIo *io,
                     kshim_framebuffer_config_t *fb, kshim_mmu_region_t *mmio)
 {
@@ -225,6 +340,10 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
     int root_compatible_count = fdt_stringlist_count(f, 0, "compatible");
     bool root_has_sunp = root_compatible_count > 0 &&
         fdt_stringlist_search(f, 0, "compatible", "qcom,sunp") >= 0;
+    /* TB710FU: SM8650 (DPU 10, legacy CTL layer routing) lists 10 SSPPs and
+     * 10 mixer slots (6 real + 0xf0f dummies) in its downstream SDE node. */
+    bool pineapple = root_compatible_count > 0 &&
+        fdt_stringlist_search(f, 0, "compatible", "qcom,pineapple") >= 0;
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     g_kshim_splash_trace.root_compatible_count = root_compatible_count;
     g_kshim_splash_trace.root_has_sunp = root_has_sunp;
@@ -287,7 +406,8 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
     bool lm_source_select = sun || canoe;
     resources.lm_source_select = lm_source_select;
     resources.sspp_rec_separated = canoe;
-    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, lm_source_select ? 10 : 8);
+    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe,
+                        (lm_source_select || pineapple) ? 10 : 8);
     int ctls = offsets(f, sde, "qcom,sde-ctl-off", resources.ctl, 8);
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     /* Stage 6: mixer offset parsing/compaction. */
@@ -309,6 +429,17 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
             ++count;
         }
         if (count < 1) return -1;
+    } else if (pineapple) {
+        /* Keep only the leading real LMs (CTL layer index == LM index). */
+        raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
+        count = 0;
+        for (int i = 0; i < raw_n; ++i) {
+            if (raw[i] == 0 || raw[i] == 0xf0f) break;
+            if (count == 6) return -1;
+            resources.mixer[count++] = raw[i];
+        }
+        for (int i = count; i < raw_n; ++i)
+            if (raw[i] != 0 && raw[i] != 0xf0f) return -1;
     } else {
         count = offsets(f, sde, "qcom,sde-mixer-off", resources.mixer, 6);
     }
@@ -333,7 +464,7 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
     /* Stage 9: SSPP type table. */
     g_kshim_splash_trace.dt_stage = 9;
 #endif
-    unsigned vig = 0, dma = 0, dma_max = lm_source_select ? 6 : 4;
+    unsigned vig = 0, dma = 0, dma_max = (lm_source_select || pineapple) ? 6 : 4;
     int types = fdt_stringlist_count(f, sde, "qcom,sde-sspp-type");
     for (int i = 0; i < pipes; ++i) {
         int len;
@@ -342,6 +473,13 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
         if (len == 3 && !memcmp(type, "vig", 3) && vig < 4) resources.pipe_id[i] = vig++;
         else if (len == 3 && !memcmp(type, "dma", 3) && dma < dma_max) resources.pipe_id[i] = 4 + dma++;
         else return -1;
+    }
+    struct CrSplash scanout;
+    if (pineapple && !lm_source_select) {
+        resources.pipe_count = pipes;
+        int pstatus = tb710fu_splash_read(&resources, io, &scanout);
+        if (pstatus) return pstatus;
+        goto have_scanout;
     }
     if (sun_fallback) {
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
@@ -360,7 +498,6 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
         for (int i = 8; i < 12; ++i)
             if (raw[i] != 0 && raw[i] != 0xf0f) return -1;
     }
-    struct CrSplash scanout;
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     /* Stage 11: CrSplashRead. */
     g_kshim_splash_trace.dt_stage = 11;
@@ -387,6 +524,7 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
     }
 #endif
     if (status) return status;
+have_scanout:;
     static const kshim_fb_format_t formats[] = {KSHIM_FB_FORMAT_RGB565, KSHIM_FB_FORMAT_XRGB8888,
         KSHIM_FB_FORMAT_ARGB8888, KSHIM_FB_FORMAT_XBGR8888, KSHIM_FB_FORMAT_ABGR8888};
     *fb = (kshim_framebuffer_config_t){.render_address = scanout.address,
