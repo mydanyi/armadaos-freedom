@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Lenovo TB710FU: active pen (Lenovo Tab Pen Plus) through the NT36532 touch
+ * IC, as in the vendor dtbo; the driver then registers "NVTCapacitivePen"
+ * (pressure, tilt, two buttons).  Pen scanning starts off after the boot
+ * firmware update; write 1 to /proc/support_pen to turn it on.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&spi4 {
+	touchscreen@0 {
+		novatek,pen-support;
+	};
+};

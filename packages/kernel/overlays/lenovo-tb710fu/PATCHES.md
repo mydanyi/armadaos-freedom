@@ -49,7 +49,14 @@ Novatek NT36532 touch IC with the Lenovo Tab Pen Plus, on SPI4. Its DT
 compatible is set by the board overlay; the pen is enabled by the touch
 overlay.
 
-(added with the touch part)
+- `patches/0201-input-touchscreen-add-nt36532-spi.patch`
+  source: https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/kernel/sources/drivers/input/touchscreen/NT36XXX_SPI
+  upstream: unknown
+  license: GPL-2.0-or-later (the Novatek notice in each file; an SPDX line was added). The repository's [LICENSE](https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/LICENSE) (section 3) keeps `kernel/sources/` under the kernel's terms.
+  notes: Novatek vendor driver as carried by the TB710FU port, moved to nt36532/ (module nt36532_ts) with a clean Makefile; matches only `novatek,nt36532-ts-spi`, so it cannot claim the `novatek,NVT-ts-spi` boards of the NT36536 driver (nt36536_ts), and builds as a module only because the vendor sources share global symbol names with it. Fixed on top of the vendor code: bounds on the /proc/NVTSPI, edge_grid_zone and Pen_ID writes (NVTSPI is now root-only), single_release() for single_open() proc files, no world-writable proc nodes, the Android-only `novatek_ts` platform device dropped (it was unregistered more than once), the pen pressure range changed in place, remove/module-init cleanup, and the TB710FU FW health check run under `ts->lock` and stopped across system suspend. The vendor code's remaining warnings are unchanged.
+- `dts/sm8650-lenovo-tb710fu-touch.dtso`
+  source: armada
+  notes: `novatek,pen-support`, as in the vendor dtbo. The driver registers `NVTCapacitivePen`, but the boot firmware update leaves pen scanning off; user space turns it on with `echo 1 > /proc/support_pen` (root).
 
 ## Bluetooth and WiFi
 
