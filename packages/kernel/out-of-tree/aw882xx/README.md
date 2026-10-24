@@ -2,8 +2,8 @@
 
 The TB323FU drives its speakers through two Awinic smart amplifiers (chip ID `0x2308`, I²C addresses 0x34 and 0x37). Upstream Linux
 has no driver for this chip (it covers AW88081/83, AW88166, AW88261, AW88395 and AW88399), so the
-speakers need this vendor driver, built as an external module `snd-soc-aw882xx.ko`. It is the only
-out-of-tree module of this project.
+speakers need this vendor driver, built as an external module `snd-soc-aw882xx.ko`. It is built alongside the
+[ALS bridge](../als-bridge/README.md) as an out-of-tree module.
 
 ## Origin and version
 

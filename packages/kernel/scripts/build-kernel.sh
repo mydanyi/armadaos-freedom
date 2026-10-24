@@ -254,6 +254,19 @@ cp -a "${AW_OOT_SRC}/." "${AW_OOT_BUILD}/"
 echo "==> Building out-of-tree aw882xx module"
 make "${MAKE_ARGS[@]}" M="${AW_OOT_BUILD}" CONFIG_SND_SOC_AW882XX=m modules
 
+# SensorProxy-to-IIO bridge for Steam's adaptive-brightness interface.
+ALS_OOT_SRC="${REPO_ROOT}/out-of-tree/als-bridge"
+ALS_OOT_BUILD="${WORK_DIR}/als-bridge-build"
+if [ ! -d "${ALS_OOT_SRC}" ]; then
+    echo "ERROR: out-of-tree als-bridge source missing: ${ALS_OOT_SRC}" >&2
+    exit 1
+fi
+rm -rf "${ALS_OOT_BUILD}"
+mkdir -p "${ALS_OOT_BUILD}"
+cp -a "${ALS_OOT_SRC}/." "${ALS_OOT_BUILD}/"
+echo "==> Building out-of-tree als-bridge module"
+make "${MAKE_ARGS[@]}" M="${ALS_OOT_BUILD}" modules
+
 command -v ccache >/dev/null 2>&1 && ccache -s || true
 size vmlinux 2>/dev/null || true
 
@@ -277,9 +290,20 @@ if [ -z "${installed_ko}" ]; then
     exit 1
 fi
 
+echo "==> Staging out-of-tree als-bridge module to extra/als-bridge"
+make "${MAKE_ARGS[@]}" M="${ALS_OOT_BUILD}" \
+    INSTALL_MOD_PATH="${STAGE}" INSTALL_MOD_DIR="extra/als-bridge" \
+    INSTALL_MOD_STRIP=1 modules_install
+installed_als=$(find "${STAGE}/lib/modules/${KVER}/extra/als-bridge" -maxdepth 1 \
+    -name 'als-bridge.ko*' -print -quit || true)
+if [ -z "${installed_als}" ]; then
+    echo "ERROR: als-bridge module was not installed into ${STAGE}" >&2
+    exit 1
+fi
+
 rm -f "${STAGE}/lib/modules/${KVER}/build" "${STAGE}/lib/modules/${KVER}/source"
 
-# Regenerate the stage index after the out-of-tree install. A missing depmod
+# Regenerate the stage index after the out-of-tree installs. A missing depmod
 # is a hard failure, not a silent skip.
 if ! command -v depmod >/dev/null 2>&1; then
     echo "ERROR: depmod not found; cannot index ${STAGE}" >&2

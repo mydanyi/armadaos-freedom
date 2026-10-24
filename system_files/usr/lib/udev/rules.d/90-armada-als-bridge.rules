@@ -1,0 +1,2 @@
+# SensorProxy must keep using the physical sensor, not its mirrored value.
+SUBSYSTEM=="iio", DRIVERS=="als-bridge", ATTR{name}=="als", ENV{IIO_SENSOR_PROXY_TYPE}=""

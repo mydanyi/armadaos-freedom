@@ -71,6 +71,7 @@ systemctl enable armada-steam-oobe.path
 systemctl enable armada-update-reserve.service
 systemctl enable armada-installer-visibility.service
 systemctl enable armada-steamapps.service
+systemctl enable armada-als-bridge.service
 systemctl enable armada-powerd.service
 systemctl enable armada-control.service
 systemctl enable steamos-manager.service

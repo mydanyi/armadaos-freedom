@@ -1,0 +1,13 @@
+[Unit]
+Description=SensorProxy light sensor bridge for Steam adaptive brightness
+Wants=iio-sensor-proxy.service
+After=iio-sensor-proxy.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/armada/armada-als-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
