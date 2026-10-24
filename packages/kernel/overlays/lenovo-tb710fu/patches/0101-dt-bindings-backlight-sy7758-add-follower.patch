@@ -1,0 +1,29 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:20 +0000
+Subject: [PATCH] dt-bindings: backlight: sy7758: add silergy,follower
+
+A chip that only mirrors the brightness of the primary SY7758 of the
+same panel and owns no backlight device.
+---
+ .../bindings/leds/backlight/silergy,sy7758.yaml           | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/leds/backlight/silergy,sy7758.yaml b/Documentation/devicetree/bindings/leds/backlight/silergy,sy7758.yaml
+index bf1d9c2b8..4cb1164b5 100644
+--- a/Documentation/devicetree/bindings/leds/backlight/silergy,sy7758.yaml
++++ b/Documentation/devicetree/bindings/leds/backlight/silergy,sy7758.yaml
+@@ -28,6 +28,14 @@ properties:
+   enable-gpios:
+     maxItems: 1
+ 
++  silergy,follower:
++    description:
++      The chip does not own a backlight device of its own.  It only mirrors
++      the brightness programmed on the primary (non-follower) SY7758 of the
++      same panel, so that a backlight split across two chips stays uniform.
++      Boards using this do not need a second backlight device.
++    type: boolean
++
+ required:
+   - compatible
+   - reg

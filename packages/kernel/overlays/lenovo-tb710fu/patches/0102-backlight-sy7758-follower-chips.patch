@@ -1,0 +1,158 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:20 +0000
+Subject: [PATCH] backlight: sy7758: mirror the brightness to follower chips
+
+The TB710FU panel splits its LED strings across two SY7758 chips (i2c6
+and i2c2).  A chip marked "silergy,follower" registers no backlight
+device of its own; the primary mirrors every brightness update to it.
+Boards with a single chip are unchanged.
+
+TB710FU also keeps the boost converter out of burst (power-save) mode:
+its ripple at low LED currents leaves a large darker region on the
+panel.
+
+Based on the TB710FU bring-up in MeteoricmeteorLL/tb710fu-linux.
+---
+ drivers/video/backlight/sy7758.c | 75 +++++++++++++++++++++++++++++---
+ 1 file changed, 70 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/video/backlight/sy7758.c b/drivers/video/backlight/sy7758.c
+index a36019a92..25df02bd4 100644
+--- a/drivers/video/backlight/sy7758.c
++++ b/drivers/video/backlight/sy7758.c
+@@ -17,6 +17,9 @@
+ #include <linux/bitfield.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/property.h>
+ 
+ #define DEFAULT_BRIGHTNESS	1024
+ #define MAX_BRIGHTNESS		4080
+@@ -69,18 +72,27 @@ struct sy7758 {
+ 	struct regmap *regmap;
+ 	struct gpio_desc *gpio;
+ 	struct backlight_device *bl;
++	bool follower;
++	struct list_head node;
+ };
+ 
++/*
++ * Some panels split their LED strings across two SY7758 chips (TB710FU: one
++ * on i2c6, one on i2c2).  Only the primary registers a backlight device; the
++ * chips marked "silergy,follower" get every brightness update mirrored.
++ */
++static LIST_HEAD(sy7758_followers);
++static DEFINE_MUTEX(sy7758_followers_lock);
++static struct backlight_device *sy7758_primary_bl;
++
+ static const struct regmap_config sy7758_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
+ 	.max_register = REG_MAX,
+ };
+ 
+-static int sy7758_backlight_update_status(struct backlight_device *backlight_dev)
++static int sy7758_write_brightness(struct sy7758 *sydev, unsigned int brightness)
+ {
+-	struct sy7758 *sydev = bl_get_data(backlight_dev);
+-	unsigned int brightness = backlight_get_brightness(backlight_dev);
+ 	int ret;
+ 
+ 	ret = regmap_write(sydev->regmap, REG_BRT_12BIT_L,
+@@ -98,6 +110,28 @@ static int sy7758_backlight_update_status(struct backlight_device *backlight_dev
+ 	return 0;
+ }
+ 
++static int sy7758_backlight_update_status(struct backlight_device *backlight_dev)
++{
++	struct sy7758 *sydev = bl_get_data(backlight_dev);
++	unsigned int brightness = backlight_get_brightness(backlight_dev);
++	struct sy7758 *follower;
++	int ret;
++
++	ret = sy7758_write_brightness(sydev, brightness);
++	if (ret)
++		return ret;
++
++	mutex_lock(&sy7758_followers_lock);
++	list_for_each_entry(follower, &sy7758_followers, node) {
++		ret = sy7758_write_brightness(follower, brightness);
++		if (ret)
++			break;
++	}
++	mutex_unlock(&sy7758_followers_lock);
++
++	return ret;
++}
++
+ static const struct backlight_ops sy7758_backlight_ops = {
+ 	.options = BL_CORE_SUSPENDRESUME,
+ 	.update_status = sy7758_backlight_update_status,
+@@ -125,8 +159,14 @@ static int sy7758_init(struct sy7758 *sydev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * TB710FU: keep the boost converter out of burst (power-save) mode;
++	 * its ripple at low LED currents leaves a large darker region on the
++	 * panel.  0 is the chip's power-on default.
++	 */
+ 	ret = regmap_write(sydev->regmap, REG_OTP_CFG5,
+-			   FIELD_PREP(MSK_CFG5_PS_MODE, 6) |
++			   FIELD_PREP(MSK_CFG5_PS_MODE,
++				      of_machine_is_compatible("lenovo,tb710fu") ? 0 : 6) |
+ 			   FIELD_PREP(MSK_CFG5_PWM_FREQ, 4));
+ 	if (ret)
+ 		return ret;
+@@ -210,6 +250,20 @@ static int sy7758_probe(struct i2c_client *client)
+ 	if (ret)
+ 		return ret;
+ 
++	/* A follower only mirrors the primary and owns no backlight device. */
++	if (device_property_read_bool(dev, "silergy,follower")) {
++		sydev->follower = true;
++		mutex_lock(&sy7758_followers_lock);
++		if (sy7758_primary_bl)
++			ret = sy7758_write_brightness(sydev,
++					backlight_get_brightness(sy7758_primary_bl));
++		/* only a chip that probes successfully may be mirrored to */
++		if (!ret)
++			list_add_tail(&sydev->node, &sy7758_followers);
++		mutex_unlock(&sy7758_followers_lock);
++		return ret;
++	}
++
+ 	props.type = BACKLIGHT_RAW;
+ 	props.max_brightness = MAX_BRIGHTNESS;
+ 	props.brightness = DEFAULT_BRIGHTNESS;
+@@ -222,6 +276,11 @@ static int sy7758_probe(struct i2c_client *client)
+ 		return dev_err_probe(dev, PTR_ERR(sydev->bl),
+ 				     "failed to register backlight device\n");
+ 
++	mutex_lock(&sy7758_followers_lock);
++	if (!sy7758_primary_bl)
++		sy7758_primary_bl = sydev->bl;
++	mutex_unlock(&sy7758_followers_lock);
++
+ 	return backlight_update_status(sydev->bl);
+ }
+ 
+@@ -229,7 +288,15 @@ static void sy7758_remove(struct i2c_client *client)
+ {
+ 	struct sy7758 *sydev = i2c_get_clientdata(client);
+ 
+-	backlight_disable(sydev->bl);
++	mutex_lock(&sy7758_followers_lock);
++	if (sydev->follower)
++		list_del(&sydev->node);
++	else if (sy7758_primary_bl == sydev->bl)
++		sy7758_primary_bl = NULL;
++	mutex_unlock(&sy7758_followers_lock);
++
++	if (!sydev->follower)
++		backlight_disable(sydev->bl);
+ }
+ 
+ static const struct i2c_device_id sy7758_ids[] = {

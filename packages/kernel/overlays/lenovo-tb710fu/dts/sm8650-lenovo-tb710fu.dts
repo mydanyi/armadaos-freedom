@@ -1,0 +1,1261 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Lenovo Xiaoxin Pad Pro GT (TB710FU)
+ *
+ * Copyright (c) 2026 the TB710FU port authors
+ *
+ * Imported from MeteoricmeteorLL/tb710fu-linux commit
+ * 16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3,
+ * kernel/sources/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu.dts; that
+ * repository's LICENSE (section 3) puts kernel/sources/ under GPL-2.0.
+ * Only this header was added; board changes live in the .dtso overlays.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/leds/common.h>
+#include "sm8650.dtsi"
+#include "pm8550.dtsi"
+#include "pm8550b.dtsi"
+#define PMK8550VE_SID 8
+#include "pm8550ve.dtsi"
+#include "pm8550vs.dtsi"
+#include "pmk8550.dtsi"
+
+/delete-node/ &aop_tme_uefi_merged_mem;
+
+/* TB710FU: drop the PDC wakeup hierarchy from the TLMM.  GPIO 162 (touch
+ * INT) sits in sm8650_pdc_map, so with wakeup-parent set the pinctrl
+ * driver marks it skip_wake_irqs and never programs the tlmm INTR registers
+ * (verified by register dump: en=0/raw=0/det=0/tgt=7); delivery then relies
+ * entirely on the PDC, which does not forward anything on this board (INT
+ * pulses confirmed on the pad, irq count stuck at 0).  Falling back to the
+ * classic tlmm summary path (GIC SPI 208) programs the registers and
+ * delivers; nothing in this port uses system suspend, so the PDC wakeup
+ * capability is not missed. */
+&tlmm { /delete-property/ wakeup-parent; };
+
+/ {
+	model = "Lenovo Xiaoxin Pad Pro GT (TB710FU)";
+	compatible = "lenovo,tb710fu", "qcom,sm8650";
+	chassis-type = "tablet";
+
+	qcom,msm-id = <696 0x20000>;
+	region_country = "PRC";
+	qcom,board-id = <0x08 0x00>;
+
+	aliases {
+		serial0 = &uart15;
+		serial1 = &uart14;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+	};
+	
+	pmic-glink {
+		compatible = "qcom,sm8650-pmic-glink",
+			     "qcom,sm8550-pmic-glink",
+			     "qcom,pmic-glink";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		orientation-gpios = <&tlmm 29 GPIO_ACTIVE_HIGH>;
+
+		connector@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+
+			power-role = "dual";
+			data-role = "dual";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					pmic_glink_hs_in: endpoint {
+						remote-endpoint = <&usb_1_dwc3_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					pmic_glink_ss_in: endpoint {
+						remote-endpoint = <&usb_dp_qmpphy_out>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+
+					pmic_glink_sbu: endpoint {
+						remote-endpoint = <&wcd_usbss_sbu_mux>;
+					};
+				};
+			};
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&volume_up_n>;
+		pinctrl-names = "default";
+
+		key-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+
+		event-hall-sensor {
+			label = "Hall Effect Sensor";
+			gpios = <&tlmm 81 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	wcd939x: audio-codec {
+		compatible = "qcom,wcd9395-codec", "qcom,wcd9390-codec";
+
+		pinctrl-0 = <&wcd_default>;
+		pinctrl-names = "default";
+
+		qcom,micbias1-microvolt = <1800000>;
+		qcom,micbias2-microvolt = <1800000>;
+		qcom,micbias3-microvolt = <1800000>;
+		qcom,micbias4-microvolt = <1800000>;
+		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+		qcom,rx-device = <&wcd_rx>;
+		qcom,tx-device = <&wcd_tx>;
+
+		reset-gpios = <&tlmm 107 GPIO_ACTIVE_LOW>;
+
+		vdd-buck-supply = <&vreg_l15b_1p8>;
+		vdd-rxtx-supply = <&vreg_l15b_1p8>;
+		vdd-io-supply = <&vreg_l15b_1p8>;
+		vdd-mic-bias-supply = <&vreg_bob1>;
+
+		#sound-dai-cells = <1>;
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	
+
+	sy7758_vdd: sy7758-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "sy7758_vdd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	reserved-memory {
+		aop_tme_uefi_merged_mem: aop-tme-uefi-merged@81c80000 { 
+			reg = <0x00 0x81c80000 0x00 0x75000 >;
+			no-map;
+		};
+			
+		lost_reg_mem: lost-reg-mem@9b09c000 {
+			no-map;
+			reg = <0x00 0x9b09c000 0x00 0x4000>;
+		};		
+		
+		linux,cma {
+			compatible = "shared-dma-pool";
+			size = <0x0 0x2000000>;
+			reusable;
+			linux,cma-default;
+		};
+		
+		ramoops@ac300000 {
+			compatible = "ramoops";
+			reg = <0x00 0xac300000 0x00 0x100000>;
+			record-size = <0x40000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x80000>;
+			/* ram_core.c 里 mem-type 的编号是
+			 *   0 = WCOMBINE, 1 = NONCACHED, 2 = NORMAL
+			 * 原来是 2(NORMAL/可缓存)：硬复位不会回写 cache，
+			 * 所以"面板一上电就硬锁"那几次 pstore 里什么都没有。
+			 * 改成 0(write-combining / Normal-NC) 让控制台日志直接
+			 * 落到 DRAM，复位后可在 /sys/fs/pstore 读回。
+			 * 不用 1(noncached)：arm64 上是 Device-nGnRnE，ramoops 的
+			 * 非对齐访问会触发 alignment fault。 */
+			mem-type = <0x00>;
+			ecc-size = <0x10>;
+		};		
+			/* TB710FU: bootloader splash framebuffer.  The kernel's boot
+		 * console, liveness gauge and initcall bar draw into it at a fixed
+		 * physical address (0xd5100000); see tb_mark()/tbfb in
+		 * init/main.c.  U-Boot adds this node itself, but writes its reg
+		 * byte-swapped (it lands as base 0x10d5 size 0x9001, reserving
+		 * nothing) and marks it no-map.  Declaring it here wins, because
+		 * U-Boot only fills in a node that is missing.
+		 *
+		 * Reserved, and deliberately NOT no-map: the drawing code reaches
+		 * it through __va(), which needs the region in the linear map.
+		 *
+		 * Without the reservation the page allocator hands these pages out
+		 * as page cache and the drawing code then overwrites whatever was
+		 * allocated there -- silent corruption of large files.
+		 */
+		framebuffer_mem: framebuffer@d5100000 {
+			reg = <0x00 0xd5100000 0x00 0x1900000>;
+		};
+
+		/* TB710FU: the two rings the boot log black box appends to
+		 * (tb_bb_pa[] in init/main.c).  Same rule: reserved, not no-map.
+		 */
+		blackbox_a_mem: tb-blackbox-a@b0000000 {
+			reg = <0x00 0xb0000000 0x00 0x100000>;
+		};
+
+		blackbox_b_mem: tb-blackbox-b@d6a00000 {
+			reg = <0x00 0xd6a00000 0x00 0x100000>;
+		};
+
+};
+
+	wcn7850-pmu {
+		compatible = "qcom,wcn7850-pmu";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_en>, <&bt_default>;
+
+		wlan-enable-gpios = <&tlmm 16 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 17 GPIO_ACTIVE_HIGH>;
+
+		vdd-supply = <&vreg_s4i_0p85>;
+		vddio-supply = <&vreg_l15b_1p8>;
+		vddio1p2-supply = <&vreg_l3c_1p2>;
+		vddaon-supply = <&vreg_s2c_0p8>;
+		vdddig-supply = <&vreg_s3c_0p9>;
+		vddrfa1p2-supply = <&vreg_s1c_1p2>;
+		vddrfa1p8-supply = <&vreg_s6c_1p8>;
+
+		clocks = <&rpmhcc RPMH_RF_CLK1>;
+
+		regulators {
+			vreg_pmu_rfa_cmn: ldo0 {
+				regulator-name = "vreg_pmu_rfa_cmn";
+			};
+
+			vreg_pmu_aon_0p59: ldo1 {
+				regulator-name = "vreg_pmu_aon_0p59";
+			};
+
+			vreg_pmu_wlcx_0p8: ldo2 {
+				regulator-name = "vreg_pmu_wlcx_0p8";
+			};
+
+			vreg_pmu_wlmx_0p85: ldo3 {
+				regulator-name = "vreg_pmu_wlmx_0p85";
+			};
+
+			vreg_pmu_btcmx_0p85: ldo4 {
+				regulator-name = "vreg_pmu_btcmx_0p85";
+			};
+
+			vreg_pmu_rfa_0p8: ldo5 {
+				regulator-name = "vreg_pmu_rfa_0p8";
+			};
+
+			vreg_pmu_rfa_1p2: ldo6 {
+				regulator-name = "vreg_pmu_rfa_1p2";
+			};
+
+			vreg_pmu_rfa_1p8: ldo7 {
+				regulator-name = "vreg_pmu_rfa_1p8";
+			};
+
+			vreg_pmu_pcie_0p9: ldo8 {
+				regulator-name = "vreg_pmu_pcie_0p9";
+			};
+
+			vreg_pmu_pcie_1p8: ldo9 {
+				regulator-name = "vreg_pmu_pcie_1p8";
+			};
+		};
+	};
+};
+
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm8550-rpmh-regulators";
+
+		vdd-bob1-supply = <&vph_pwr>;
+		vdd-bob2-supply = <&vph_pwr>;
+		vdd-l1-l4-l10-supply = <&vreg_s3g_1p1>;
+		vdd-l2-l13-l14-supply = <&vreg_bob1>;
+		vdd-l3-supply = <&vreg_s1c_1p2>;
+		vdd-l5-l16-supply = <&vreg_bob1>;
+		vdd-l6-l7-supply = <&vreg_bob1>;
+		vdd-l8-l9-supply = <&vreg_bob1>;
+		vdd-l11-supply = <&vreg_s1c_1p2>;
+		vdd-l12-supply = <&vreg_s6c_1p8>;
+		vdd-l15-supply = <&vreg_s6c_1p8>;
+		vdd-l17-supply = <&vreg_bob2>;
+
+		qcom,pmic-id = "b";
+
+		vreg_bob1: bob1 {
+			regulator-name = "vreg_bob1";
+			regulator-min-microvolt = <3296000>;
+			regulator-max-microvolt = <3960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_bob2: bob2 {
+			regulator-name = "vreg_bob2";
+			regulator-min-microvolt = <2720000>;
+			regulator-max-microvolt = <3008000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l1b_1p8: ldo1 {
+                        regulator-name = "vreg_l1b_1p8";
+                        regulator-min-microvolt = <1800000>;
+                        regulator-max-microvolt = <1800000>;
+                        regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+                        regulator-allow-set-load;
+                        regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+                                                   RPMH_REGULATOR_MODE_HPM>;
+                };
+
+		vreg_l4b_1p8: ldo4 {
+			regulator-name = "vreg_l4b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l5b_3p1: ldo5 {
+			regulator-name = "vreg_l5b_3p1";
+			regulator-min-microvolt = <3104000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l8b_1p8: ldo8 {
+                        regulator-name = "vreg_l8b_1p8";
+                        regulator-min-microvolt = <1800000>;
+                        regulator-max-microvolt = <3300000>;
+                        regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+                        regulator-allow-set-load;
+                        regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+                                                   RPMH_REGULATOR_MODE_HPM>;
+                };
+
+		vreg_l9b_2p8: ldo9 {
+			regulator-name = "vreg_l9b_2p9";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		
+		vreg_l11b_1p2: ldo11 {
+			regulator-name = "vreg_l11b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l12b_1p9: ldo12 {
+			regulator-name = "vreg_l12b_1p9";
+			regulator-min-microvolt = <1890000>;
+        		regulator-max-microvolt = <1910000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l13b_3p0: ldo13 {
+			regulator-name = "vreg_l13b_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l14b_2p8: ldo14 {
+			regulator-name = "vreg_l14b_3p2";
+			/*
+			 * Touch controller (Novatek NT36532) VDD.  The vendor feeds
+			 * it from this rail (vdd-supply in
+			 * sm8650-lenovo-tb321fu.dts, min/max 3.2 V) and nothing else
+			 * votes for it: without always-on the die stays unpowered,
+			 * every SPI read returns 0x00 and the driver reports "chip
+			 * is not identified".
+			 */
+			regulator-always-on;
+			regulator-min-microvolt = <3200000>;
+			regulator-max-microvolt = <3200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l15b_1p8: ldo15 {
+			regulator-name = "vreg_l15b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l16b_2p8: ldo16 {
+			regulator-name = "vreg_l16b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l17b_2p5: ldo17 {
+			regulator-name = "vreg_l17b_2p5";
+			regulator-min-microvolt = <2504000>;
+			regulator-max-microvolt = <2504000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-1 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+
+		vdd-l1-supply = <&vreg_s1c_1p2>;
+		vdd-l3-supply = <&vreg_s1c_1p2>;
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+
+		qcom,pmic-id = "c";
+
+		vreg_s1c_1p2: smps1 {
+			regulator-name = "vreg_s1c_1p2";
+			regulator-min-microvolt = <1224000>;
+			regulator-max-microvolt = <1348000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s2c_0p8: smps2 {
+			regulator-name = "vreg_s2c_0p8";
+			/* WCN7850 启动需 ≥852mV，pwrseq 驱动只 enable 不调压，故抬 min */
+			regulator-min-microvolt = <852000>;
+			regulator-max-microvolt = <1036000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s3c_0p9: smps3 {
+			regulator-name = "vreg_s3c_0p9";
+			regulator-min-microvolt = <904000>;
+			regulator-max-microvolt = <1064000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s6c_1p8: smps6 {
+			regulator-name = "vreg_s6c_1p8";
+			regulator-min-microvolt = <1856000>;
+			regulator-max-microvolt = <2000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l1c_1p2: ldo1 {
+			regulator-name = "vreg_l1c_1p2";
+			regulator-min-microvolt = <1100000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l3c_1p2: ldo3 {
+			regulator-name = "vreg_l3c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-2 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+
+		vdd-l1-supply = <&vreg_s3c_0p9>;
+
+		qcom,pmic-id = "d";
+
+		vreg_l1d_0p88: ldo1 {
+			regulator-name = "vreg_l1d_0p88";
+			regulator-min-microvolt = <912000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-3 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+
+		vdd-l3-supply = <&vreg_s3c_0p9>;
+
+		qcom,pmic-id = "e";
+
+		vreg_l3e_0p9: ldo3 {
+			regulator-name = "vreg_l3e_0p9";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-4 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+
+		vdd-l3-supply = <&vreg_s3c_0p9>;
+
+		qcom,pmic-id = "g";
+
+		vreg_s3g_1p1: smps3 {
+			regulator-name = "vreg_s3g_1p2";
+			regulator-min-microvolt = <1000000>;
+			regulator-max-microvolt = <1100000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l3g_0p91: ldo3 {
+			regulator-name = "vreg_l3g_0p91";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-5 {
+		compatible = "qcom,pm8550ve-rpmh-regulators";
+
+		vdd-l1-supply = <&vreg_s3c_0p9>;
+		vdd-l3-supply = <&vreg_s1c_1p2>;
+		vdd-s4-supply = <&vph_pwr>;
+
+		qcom,pmic-id = "i";
+
+		vreg_s4i_0p85: smps4 {
+			regulator-name = "vreg_s4i_0p85";
+			/* WCN7850 启动需 ≥852mV，pwrseq 驱动只 enable 不调压，故抬 min */
+			regulator-min-microvolt = <852000>;
+			regulator-max-microvolt = <1004000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s5i_0p3: smps5 {
+                        regulator-name = "vreg_s5i_0p3";
+                        regulator-min-microvolt = <300000>;
+                        regulator-max-microvolt = <700000>;
+                        regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+                };
+
+		vreg_l1i_0p88: ldo1 {
+			regulator-name = "vreg_l1i_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+		
+		vreg_l2i_0p88: ldo2 {
+			regulator-name = "vreg_l2i_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l3i_1p2: ldo3 {
+			regulator-name = "vreg_l3i_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+// Enable i2c
+&qupv3_id_0 {
+	status = "okay";
+};
+
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&gpi_dma1 {
+	status = "okay";
+};
+
+&gpi_dma2 {
+        status = "okay";
+};
+
+/* Disable for now
+&cci1 {
+	status = "okay";
+};
+*/
+
+/* Second SY7758 backlight chip ("salve" in the vendor DT).  It answers at
+ * 0x2e on this bus and drives the other half of the panel LED strings.
+ * The driver mirrors the master's brightness onto it, so it registers no
+ * backlight device of its own (silergy,follower). */
+&i2c2 {
+	status = "okay";
+
+	backlight_slave: sy7758@2e {
+		compatible = "silergy,sy7758";
+		reg = <0x2e>;
+		vdd-supply = <&sy7758_vdd>;
+		silergy,follower;
+	};
+};
+
+// Lcd bias and backlight
+&i2c6 {
+	status = "okay";
+	
+	// Power
+	aw37504: regulator@3e {
+		reg = <0x3e>;
+		compatible = "awinic,aw37503";
+		pinctrl-0 = <&panel_pwr_active>;
+		pinctrl-1 = <&panel_pwr_sleep>;
+		pinctrl-names = "default", "sleep";
+		status = "okay";
+
+		/* 社区参考用单个 awinic,aw37504 节点、由 reset-gpios 同时控制
+		 * ENP/ENN；本树只有主线 aw37503 双路输出驱动，所以拆成 outp(VPOS,
+		 * ENP=tlmm90) / outn(VNEG, ENN=tlmm91) 两路，由面板驱动的
+		 * avdd-supply/avee-supply 在 prepare 里按 VCC→bias 顺序使能。 */
+		aw37504_avdd: outp {
+			regulator-name = "panel-avdd";
+			regulator-min-microvolt = <5800000>;
+			regulator-max-microvolt = <5800000>;
+			enable-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		};
+
+		aw37504_avee: outn {
+			regulator-name = "panel-avee";
+			regulator-min-microvolt = <5800000>;
+			regulator-max-microvolt = <5800000>;
+			enable-gpios = <&tlmm 91 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	// Backlight master (SY7758)
+	backlight: sy7758@2e {
+		compatible = "silergy,sy7758";
+		reg = <0x2e>;
+		vdd-supply = <&sy7758_vdd>;
+	};
+
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/sm8650/xiaoxin/gt/gen70900_zap.mbn";
+	};
+};
+
+&iris {
+	status = "okay";
+
+	firmware-name = "qcom/sm8650/xiaoxin/gt/vpu33_4v.mbn";
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	status = "okay";
+	qcom,master-dsi;
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	vdda-supply = <&vreg_l3i_1p2>;
+	
+	display_panel: panel@0 {
+		status = "okay";
+		/* 对齐社区参考：面板节点直接引用 bias(avdd/avee) 与背光，
+		 * 由 panel-nt36532-wqhd-dual-dsi-dsc.c 在 prepare 里统一使能 */
+		compatible = "lenovo,nt36532-wqhd";
+		reg = <0>;
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&disp0_reset_n_active>, <&mdp_vsync_active>;
+		pinctrl-1 = <&disp0_reset_n_suspend>, <&mdp_vsync_suspend>;
+		vddio-supply = <&vreg_l12b_1p9>;
+		vci-supply = <&vreg_l13b_3p0>;
+		vdd-supply = <&vreg_l11b_1p2>;
+		avdd-supply = <&aw37504_avdd>;
+		avee-supply = <&aw37504_avee>;
+
+		reset-gpios = <&tlmm 133 GPIO_ACTIVE_LOW>;
+		backlight = <&backlight>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				panel0_in_0: endpoint {
+					remote-endpoint = <&mdss_dsi0_out>;
+				};
+			};
+
+			port@1{
+				reg = <1>;
+				panel0_in_1: endpoint {
+					remote-endpoint = <&mdss_dsi1_out>;
+				};
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	remote-endpoint = <&panel0_in_0>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l1i_0p88>;
+
+	status = "okay";
+};
+
+&mdss_dsi1 {
+	vdda-supply = <&vreg_l3i_1p2>;
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>, <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
+	status = "okay";
+};
+
+&mdss_dsi1_out {
+	remote-endpoint = <&panel0_in_1>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi1_phy {
+	vdds-supply = <&vreg_l1i_0p88>;
+
+	status = "okay";
+};
+
+&mdss_dp0 {
+	/*
+	 * 关闭 DP：本板 USB-C DP 链路（88e8000.phy 的 aux bridge）在 DTB 里
+	 * 不完整，aux_bridge 取不到下游 drm_bridge，DP 控制器永久处于
+	 * deferred probe（waiting_for_supplier: 88e8000.phy）。而 DP0 接了
+	 * DPU 的输出端口，会被 add_display_components() 纳入 msm DRM master
+	 * 的 component 匹配表，导致 master 永远凑不齐 component、card0 不注册
+	 * （现象：背光亮但黑屏、/sys/class/drm 为空）。点屏阶段不需要外接屏，
+	 * 先关掉，让 master 仅由 DPU + 双 DSI + GPU 组成。
+	 */
+	status = "disabled";
+};
+
+&spi4 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "novatek,NVT-ts-spi";
+		reg = <0>;
+
+		spi-max-frequency = <9600000>;
+		/*
+		 * Vendor NT36XXX_SPI driver parses this itself and only wants the
+		 * raw gpio number out of cell 1 ("novatek,irq-gpio"), it does not
+		 * use the standard irq-gpios binding.
+		 */
+		/*
+		 * RESX goes through the descriptor API now - the driver calls
+		 * fwnode_gpiod_get_index(np, "novatek-reset", ..) which resolves
+		 * this "<con_id>-gpios" property - because the legacy
+		 * gpio_request_one() path returns -EPROBE_DEFER for this line on
+		 * this kernel whatever global number is used.  With
+		 * NVT_TOUCH_SUPPORT_HW_RST=1 the driver then drives RESX low and
+		 * raises it after nvt_eng_reset(), i.e. a real low->high pulse.
+		 * (INT still uses the legacy binding; the driver tolerates its
+		 * request failing.)
+		 */
+		novatek-reset-gpios = <&tlmm 161 GPIO_ACTIVE_HIGH>;
+		novatek,irq-gpio = <&tlmm 162 0x2001>;
+
+		panel = <&display_panel>;
+
+		firmware-name = "novatek/novatek_nt36532_fw.bin";
+	};
+};
+
+// Sound nodes
+&i2c3 {
+	status = "okay";
+
+	wcd_usbss: typec-mux@e {
+		compatible = "qcom,wcd9395-usbss", "qcom,wcd9390-usbss";
+		reg = <0xe>;
+
+		vdd-supply = <&vreg_l15b_1p8>;
+		reset-gpios = <&tlmm 152 GPIO_ACTIVE_HIGH>;
+
+		mode-switch;
+		orientation-switch;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				wcd_usbss_sbu_mux: endpoint {
+				remote-endpoint = <&pmic_glink_sbu>;
+				};
+			};
+		};
+	};
+};
+
+&swr1 {
+	status = "okay";
+
+	/* WCD9395 RX */
+	wcd_rx: codec@0,4 {
+		compatible = "sdw20217010e00";
+		reg = <0 4>;
+
+		/*
+		 * WCD9395 RX Port 1 (HPH_L/R)      <=> SWR1 Port 1 (HPH_L/R)
+		 * WCD9395 RX Port 2 (CLSH)         <=> SWR1 Port 2 (CLSH)
+		 * WCD9395 RX Port 3 (COMP_L/R)     <=> SWR1 Port 3 (COMP_L/R)
+		 * WCD9395 RX Port 4 (LO)           <=> SWR1 Port 4 (LO)
+		 * WCD9395 RX Port 5 (DSD_L/R)      <=> SWR1 Port 5 (DSD_L/R)
+		 * WCD9395 RX Port 6 (HIFI_PCM_L/R) <=> SWR1 Port 9 (HIFI_PCM_L/R)
+		 */
+		qcom,rx-port-mapping = <1 2 3 4 5 9>;
+	};
+};
+
+&swr2 {
+	status = "okay";
+
+	/* WCD9395 TX */
+	wcd_tx: codec@0,3 {
+		compatible = "sdw20217010e00";
+		reg = <0 3>;
+
+		/*
+		 * WCD9395 TX Port 1 (ADC1,2,3,4)         <=> SWR2 Port 2 (TX SWR_INPUT 0,1,2,3)
+		 * WCD9395 TX Port 2 (ADC3,4 & DMIC0,1)   <=> SWR2 Port 2 (TX SWR_INPUT 0,1,2,3)
+		 * WCD9395 TX Port 3 (DMIC0,1,2,3 & MBHC) <=> SWR2 Port 3 (TX SWR_INPUT 4,5,6,7)
+		 * WCD9395 TX Port 4 (DMIC4,5,6,7)        <=> SWR2 Port 4 (TX SWR_INPUT 8,9,10,11)
+		 */
+		qcom,tx-port-mapping = <2 2 3 4>;
+	};
+};
+
+&pcie0 {
+	wake-gpios = <&tlmm 96 GPIO_ACTIVE_HIGH>;
+	perst-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
+
+	pinctrl-0 = <&pcie0_default_state>;
+	pinctrl-names = "default";
+
+	status = "okay";
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1107";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
+		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
+		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+	};
+};
+
+&pcie0_phy {
+	vdda-phy-supply = <&vreg_l1i_0p88>;
+	vdda-pll-supply = <&vreg_l3i_1p2>;
+
+	status = "okay";
+};
+
+&uart15 {
+	status = "enabled";
+};
+
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin { 
+	linux,code = <KEY_VOLUMEDOWN>;
+
+	status = "okay";
+};
+
+&tlmm {
+	/* Reserved I/Os for NFC */
+	gpio-reserved-ranges = <32 8>, <74 1>;
+
+	bt_default: bt-default-state {
+		bt-en-pins {
+			pins = "gpio17";
+			function = "gpio";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		sw-ctrl-pins {
+			pins = "gpio18";
+			function = "gpio";
+			bias-pull-down;
+		};
+	};
+
+	keyboard_sensor_default: keyboard-sensor-default-state {
+		wakeup-pins {
+			pins = "gpio137";
+                        function = "gpio";
+                        drive-strength = <2>;
+                        bias-disabke;
+                };
+	};
+
+	hall_sensor_default: hall-sensor-default-state {
+		pins = "gpio81";
+		function = "gpio";
+		drive-strength = <2>;
+	};
+
+	sy7758_pwr_active: sy7758-pwr-active-state {
+		pins = "gpio89";
+		function = "gpio";
+		output-high;
+	};
+
+	sy7758_pwr_sleep: sy7758-pwr-sleep-state {
+		pins = "gpio89";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-low;
+	};
+
+	panel_pwr_active: panel-pwr-active-state {
+		pins = "gpio90", "gpio91";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+		output-high;
+	};
+
+	panel_pwr_sleep: panel-pwr-sleep-state {
+		pins = "gpio90", "gpio91";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-low;
+	};
+
+	/*
+	 * Touch (Novatek NT36532 on spi4) owns gpio161 (RESX) and gpio162 (INT)
+	 * through the driver itself (NVT_TOUCH_SUPPORT_HW_RST=1 makes it request
+	 * RESX as output-low and pulse it high).  Do NOT add a pinctrl state for
+	 * those pins here: with one applied, the driver's legacy
+	 * gpio_request_one() fails with -EPROBE_DEFER and its probe aborts.
+	 */
+
+	mdp_vsync_active: mdp-vsync-active-state {
+		pins = "gpio86";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	mdp_vsync_suspend: mdp-vsync-suspend-state {
+		pins = "gpio86";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+	
+	disp0_reset_n_active: disp0-reset-n-active-state {
+		pins = "gpio133";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable = <0x00>;
+	};
+
+	disp0_reset_n_suspend: disp0-reset-n-suspend-state {
+		pins = "gpio133";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	wlan_en: wlan-en-state {
+		pins = "gpio16";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-down;
+	};
+
+	wcd_default: wcd-reset-n-active-state {
+		pins = "gpio107";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-disable;
+		output-low;
+	};
+};
+
+&pm8550_pwm {
+	status = "okay";
+	// #address-cells = <1>;
+	// #size-cells = <0>;
+
+	multi-led {
+		color = <LED_COLOR_ID_RGB>;
+		function = LED_FUNCTION_STATUS;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@1 {
+			reg = <1>;
+			color = <LED_COLOR_ID_RED>;
+		};
+
+		led@2 {
+			reg = <2>;
+			color = <LED_COLOR_ID_GREEN>;
+		};
+
+		led@3 {
+			reg = <3>;
+			color = <LED_COLOR_ID_BLUE>;
+		};
+	};
+};
+
+&pm8550b_eusb2_repeater {
+	vdd18-supply = <&vreg_l15b_1p8>;
+	vdd3-supply = <&vreg_l5b_3p1>;
+};
+
+&pm8550vs_c {
+	status = "okay";
+};
+
+&pm8550vs_d {
+	status = "okay";
+};
+
+&pm8550vs_e {
+	status = "okay";
+};
+
+&pm8550vs_g {
+	status = "okay";
+};
+
+&pm8550_gpios {
+	sdc2_card_det_n: sdc2-card-det-state {
+		pins = "gpio12";
+		function = "normal";
+		bias-pull-up;
+		input-enable;
+		output-disable;
+		power-source = <1>; /* 1.8 V */
+	};
+
+	volume_up_n: volume-up-n-state {
+		pins = "gpio6";
+		function = "normal";
+		bias-pull-up;
+		input-enable;
+		power-source = <1>;
+	};	
+};
+
+&uart14 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,wcn7850-bt";
+
+		/* The board's factory-assigned BT address, read from the
+		 * Android system.  The binding is little-endian: the textual
+		 * address 24:b5:b9:94:8e:24 is stored last byte first. */
+		local-bd-address = [24 8e 94 b9 b5 24];
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
+
+		max-speed = <3200000>;
+	};
+};
+
+&sleep_clk {
+	clock-frequency = <32764>;
+};
+
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 210 GPIO_ACTIVE_LOW>;
+	vcc-supply = <&vreg_l17b_2p5>;
+	vcc-max-microamp = <1300000>;
+	vccq-supply = <&vreg_l1c_1p2>;
+	vccq-max-microamp = <1200000>;
+
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	vdda-phy-supply = <&vreg_l1d_0p88>;
+	vdda-pll-supply = <&vreg_l3i_1p2>;
+
+	status = "okay";
+};
+
+&usb_1 {
+	status = "okay";
+	/* DRD: pmic-glink UCSI flips dwc3 between device (NCM console) and
+	 * host (USB-C hub with keyboard/mouse).  Without this property dwc3
+	 * falls back to peripheral-only ("dr_mode forced to gadget"). */
+	usb-role-switch;
+};
+
+&usb_1_dwc3_hs {
+	remote-endpoint = <&pmic_glink_hs_in>;
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mbn",
+			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mbn";
+
+	status = "okay";
+};
+
+&remoteproc_cdsp {
+	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mbn",
+			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mbn";
+
+	status = "okay";
+};
+
+&usb_1_hsphy {
+	vdd-supply = <&vreg_l1i_0p88>;
+	vdda12-supply = <&vreg_l3i_1p2>;
+
+	phys = <&pm8550b_eusb2_repeater>;
+
+	status = "okay";
+};
+
+&usb_dp_qmpphy {
+	vdda-phy-supply = <&vreg_l3i_1p2>;
+	vdda-pll-supply = <&vreg_l3g_0p91>;
+
+	status = "okay";
+};
+
+&usb_dp_qmpphy_out {
+	remote-endpoint = <&pmic_glink_ss_in>;
+};
+
+&xo_board {
+	clock-frequency = <76800000>;
+};
