@@ -1,0 +1,508 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:20 +0000
+Subject: [PATCH] drm/panel: add Novatek NT36532 WQHD dual-DSI DSC panel
+
+The 3200x2000 120 Hz panel of the Lenovo Xiaoxin Pad Pro GT (TB710FU):
+two DSI links of 1600x2000 each, DSC 1.1, 8 bpc, 8 bpp, two 800x20
+slices per line in one packet.  The init sequence is the vendor's.
+
+Panel bring-up by SpendyYT, carried in MeteoricmeteorLL/tb710fu-linux.
+---
+ drivers/gpu/drm/panel/Kconfig                 |  15 +
+ drivers/gpu/drm/panel/Makefile                |   1 +
+ drivers/gpu/drm/panel/panel-novatek-nt36532.c | 448 ++++++++++++++++++
+ 3 files changed, 464 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-novatek-nt36532.c
+
+diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
+index 0180a243b..6e8d4d00f 100644
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -721,6 +721,21 @@ config DRM_PANEL_NOVATEK_NT36523
+ 	  around the Novatek NT36523 display controller, such as some
+ 	  Boe panels used in Xiaomi Mi Pad 5 and 5 Pro tablets.
+ 
++config DRM_PANEL_NOVATEK_NT36532
++	tristate "Novatek NT36532 WQHD dual-DSI DSC panel"
++	depends on OF
++	depends on DRM_MIPI_DSI
++	depends on BACKLIGHT_CLASS_DEVICE
++	select DRM_DISPLAY_DSC_HELPER
++	select DRM_DISPLAY_HELPER
++	help
++	  Say Y here if you want to enable support for the Novatek NT36532
++	  WQHD (3200x2000) dual-DSI DSC panel found on the Lenovo Xiaoxin
++	  Pad Pro GT (TB710FU).
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called panel-novatek-nt36532.
++
+ config DRM_PANEL_NOVATEK_NT36536
+ 	tristate "Novatek NT36536 panel driver"
+ 	depends on OF
+diff --git a/drivers/gpu/drm/panel/Makefile b/drivers/gpu/drm/panel/Makefile
+index c53902cd2..0efcd7aa3 100644
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -69,6 +69,7 @@ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35532) += panel-novatek-nt35532.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35560) += panel-novatek-nt35560.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35950) += panel-novatek-nt35950.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36523) += panel-novatek-nt36523.o
++obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36532) += panel-novatek-nt36532.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36536) += panel-novatek-nt36536.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36672A) += panel-novatek-nt36672a.o
+ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36672E) += panel-novatek-nt36672e.o
+diff --git a/drivers/gpu/drm/panel/panel-novatek-nt36532.c b/drivers/gpu/drm/panel/panel-novatek-nt36532.c
+new file mode 100644
+index 000000000..4dc910511
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-novatek-nt36532.c
+@@ -0,0 +1,448 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Novatek NT36532 WQHD (3200x2000) dual-DSI DSC panel, as found on the
++ * Lenovo Xiaoxin Pad Pro GT (TB710FU).
++ *
++ * Bring-up by SpendyYT, carried in MeteoricmeteorLL/tb710fu-linux.
++ */
++
++#include <linux/backlight.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_graph.h>
++#include <linux/regulator/consumer.h>
++#include <drm/drm_of.h>
++#include <video/mipi_display.h>
++
++#include <drm/display/drm_dsc.h>
++#include <drm/display/drm_dsc_helper.h>
++#include <drm/drm_connector.h>
++#include <drm/drm_crtc.h>
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#define DSI_NUM_MIN 1
++
++struct panel_info {
++	struct drm_panel panel;
++	struct drm_connector *connector;
++	struct mipi_dsi_device *dsi[2];
++	struct panel_desc *desc;
++	enum drm_panel_orientation orientation;
++
++	struct gpio_desc *reset_gpio;
++	/* vddio, vci, vdd, avdd, avee (the AW37503 bias has two outputs) */
++	struct regulator_bulk_data supplies[5];
++};
++
++struct panel_desc {
++	unsigned int width_mm;
++	unsigned int height_mm;
++
++	unsigned int bpc;
++	unsigned int lanes;
++	unsigned long mode_flags;
++	enum mipi_dsi_pixel_format format;
++
++	const struct drm_display_mode *modes;
++	unsigned int num_modes;
++	const struct mipi_dsi_device_info dsi_info;
++	int (*init_sequence)(struct panel_info *pinfo);
++
++	bool is_dual_dsi;
++
++	struct drm_dsc_config dsc;
++};
++
++static inline struct panel_info *to_panel_info(struct drm_panel *panel)
++{
++	return container_of(panel, struct panel_info, panel);
++}
++
++static int nt36532_wqhd_init_sequence(struct panel_info *pinfo)
++{
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = pinfo->dsi[0] };
++	struct drm_dsc_picture_parameter_set pps;
++
++	/* Sent on DSI0 only; qcom,sync-dual-dsi broadcasts them to both links */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x2a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbc, 0x66, 0x06);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0xf0);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfa, 0x05);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x76, 0x16);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x27);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd0, 0x13);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd1, 0x54);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd2, 0x38);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xde, 0x40);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xdf, 0x02);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x23);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x00, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x05, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x07, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x08, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x09, 0xc2);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x10, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x11, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x12, 0xeb);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x15, 0x15);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x16, 0x13);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x30, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x31, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x32, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x33, 0xfc);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x34, 0xf9);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x35, 0xf5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x36, 0xf2);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x37, 0xf0);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x38, 0xed);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x39, 0xeb);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3a, 0xe8);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3b, 0xe5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3d, 0xe3);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3f, 0xe0);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x40, 0xde);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x41, 0xdb);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x58, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x59, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5a, 0xfa);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5b, 0xf7);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5c, 0xf2);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5d, 0xeb);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5e, 0xe3);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5f, 0xd9);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x60, 0xd1);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x61, 0xcc);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x62, 0xc7);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x63, 0xbf);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x64, 0xba);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x65, 0xb5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x66, 0xb0);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x67, 0xab);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x19, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1a, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1b, 0x04);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1c, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1d, 0x0e);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1e, 0x14);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1f, 0x18);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x20, 0x1e);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x21, 0x22);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x22, 0x26);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x23, 0x2a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x24, 0x30);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x25, 0x34);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x26, 0x38);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x27, 0x3c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x28, 0x3f);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x29, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x2b, 0x28);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x25);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0c);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x98, 0x80);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	// Enable pwm
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x51, 0x0f, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x53, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x55, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3b, 0x03, 0xea, 0x1a, 0x04, 0x04, 0x00);
++
++	/* DSC Enable */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x90, 0x03);
++	drm_dsc_pps_payload_pack(&pps, &pinfo->desc->dsc);
++	mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x9d, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb2, 0x91);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb3, 0x40);
++
++	/* Start Display */
++	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 120);
++
++	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 20);
++
++	return dsi_ctx.accum_err;
++}
++
++static const struct drm_display_mode nt36532_wqhd_modes[] = {
++	{
++		/* 120Hz */
++		.clock = (3200 + 276 + 16 + 32) * (2000 + 26 + 2 + 232) * 120 / 1000,
++		.hdisplay = 3200,
++		.hsync_start = 3200 + 276,
++		.hsync_end = 3200 + 276 + 16,
++		.htotal = 3200 + 276 + 16 + 32,
++		.vdisplay = 2000,
++		.vsync_start = 2000 + 26,
++		.vsync_end = 2000 + 26 + 2,
++		.vtotal = 2000 + 26 + 2 + 232,
++	},
++};
++
++static struct panel_desc nt36532_wqhd_desc = {
++	.modes = nt36532_wqhd_modes,
++	.num_modes = ARRAY_SIZE(nt36532_wqhd_modes),
++	.dsi_info = {
++		.type = "NT36532-lenovo",
++		.channel = 0,
++		.node = NULL,
++	},
++	.width_mm = 274,
++	.height_mm = 171,
++	.bpc = 8,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS |
++		      MIPI_DSI_MODE_LPM,
++	.init_sequence = nt36532_wqhd_init_sequence,
++	.is_dual_dsi = true,
++	.dsc = {
++		.dsc_version_major = 0x1,
++		.dsc_version_minor = 0x1,
++		.slice_height = 20,
++		.slice_width = 800,
++		.slice_count = 2,
++		.bits_per_component = 8,
++		.bits_per_pixel = 8 << 4,
++		.block_pred_enable = true,
++	},
++};
++
++static void nt36532_reset(struct panel_info *pinfo)
++{
++	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
++	usleep_range(10000, 11000);
++	gpiod_set_value_cansleep(pinfo->reset_gpio, 0);
++	usleep_range(10000, 11000);
++	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
++	usleep_range(10000, 11000);
++	gpiod_set_value_cansleep(pinfo->reset_gpio, 0);
++	usleep_range(10000, 11000);
++}
++
++static int nt36532_prepare(struct drm_panel *panel)
++{
++	struct panel_info *pinfo = to_panel_info(panel);
++	int ret;
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
++	if (ret < 0) {
++		dev_err(panel->dev, "failed to enable regulators: %d\n", ret);
++		return ret;
++	}
++
++	nt36532_reset(pinfo);
++
++	ret = pinfo->desc->init_sequence(pinfo);
++	if (ret < 0) {
++		regulator_bulk_disable(ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
++		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int nt36532_disable(struct drm_panel *panel)
++{
++	struct panel_info *pinfo = to_panel_info(panel);
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = pinfo->dsi[0] };
++
++	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
++	msleep(50);
++
++	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
++	msleep(120);
++
++	return dsi_ctx.accum_err;
++}
++
++static int nt36532_unprepare(struct drm_panel *panel)
++{
++	struct panel_info *pinfo = to_panel_info(panel);
++
++	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
++	regulator_bulk_disable(ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
++
++	return 0;
++}
++
++static int nt36532_get_modes(struct drm_panel *panel,
++			       struct drm_connector *connector)
++{
++	struct panel_info *pinfo = to_panel_info(panel);
++	int i;
++
++	for (i = 0; i < pinfo->desc->num_modes; i++) {
++		const struct drm_display_mode *m = &pinfo->desc->modes[i];
++		struct drm_display_mode *mode;
++
++		mode = drm_mode_duplicate(connector->dev, m);
++		if (!mode) {
++			dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
++				m->hdisplay, m->vdisplay, drm_mode_vrefresh(m));
++			return -ENOMEM;
++		}
++
++		mode->type = DRM_MODE_TYPE_DRIVER;
++		if (i == 0)
++			mode->type |= DRM_MODE_TYPE_PREFERRED;
++
++		drm_mode_set_name(mode);
++		drm_mode_probed_add(connector, mode);
++	}
++
++	connector->display_info.width_mm = pinfo->desc->width_mm;
++	connector->display_info.height_mm = pinfo->desc->height_mm;
++	connector->display_info.bpc = pinfo->desc->bpc;
++	pinfo->connector = connector;
++
++	return pinfo->desc->num_modes;
++}
++
++static enum drm_panel_orientation nt36532_get_orientation(struct drm_panel *panel)
++{
++	struct panel_info *pinfo = to_panel_info(panel);
++
++	return pinfo->orientation;
++}
++
++static const struct drm_panel_funcs nt36532_panel_funcs = {
++	.disable = nt36532_disable,
++	.prepare = nt36532_prepare,
++	.unprepare = nt36532_unprepare,
++	.get_modes = nt36532_get_modes,
++	.get_orientation = nt36532_get_orientation,
++};
++
++static int nt36532_probe(struct mipi_dsi_device *dsi)
++{
++	struct device *dev = &dsi->dev;
++	struct device_node *dsi1;
++	struct mipi_dsi_host *dsi1_host;
++	struct panel_info *pinfo;
++	const struct mipi_dsi_device_info *info;
++	int i, ret;
++
++	pinfo = devm_drm_panel_alloc(dev, struct panel_info, panel,
++				     &nt36532_panel_funcs,
++				     DRM_MODE_CONNECTOR_DSI);
++	if (IS_ERR(pinfo))
++		return PTR_ERR(pinfo);
++
++	pinfo->supplies[0].supply = "vddio";
++	pinfo->supplies[1].supply = "vci";
++	pinfo->supplies[2].supply = "vdd";
++	pinfo->supplies[3].supply = "avdd";
++	pinfo->supplies[4].supply = "avee";
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to get regulators\n");
++
++	pinfo->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(pinfo->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(pinfo->reset_gpio), "failed to get reset gpio\n");
++
++	pinfo->desc = (struct panel_desc *)of_device_get_match_data(dev);
++	if (!pinfo->desc)
++		return -ENODEV;
++
++	/* If the panel is dual dsi, register DSI1 */
++	if (pinfo->desc->is_dual_dsi) {
++		info = &pinfo->desc->dsi_info;
++
++		dsi1 = of_graph_get_remote_node(dsi->dev.of_node, 1, -1);
++		if (!dsi1) {
++			dev_err(dev, "cannot get secondary DSI node.\n");
++			return -ENODEV;
++		}
++
++		dsi1_host = of_find_mipi_dsi_host_by_node(dsi1);
++		of_node_put(dsi1);
++		if (!dsi1_host)
++			return dev_err_probe(dev, -EPROBE_DEFER, "cannot get secondary DSI host\n");
++
++		pinfo->dsi[1] = devm_mipi_dsi_device_register_full(dev, dsi1_host, info);
++		if (IS_ERR(pinfo->dsi[1])) {
++			dev_err(dev, "cannot get secondary DSI device\n");
++			return PTR_ERR(pinfo->dsi[1]);
++		}
++	}
++
++	pinfo->dsi[0] = dsi;
++	mipi_dsi_set_drvdata(dsi, pinfo);
++
++	ret = of_drm_get_panel_orientation(dev->of_node, &pinfo->orientation);
++	if (ret < 0) {
++		dev_err(dev, "%pOF: failed to get orientation %d\n", dev->of_node, ret);
++		return ret;
++	}
++
++	pinfo->panel.prepare_prev_first = true;
++
++	ret = drm_panel_of_backlight(&pinfo->panel);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to get backlight\n");
++
++	ret = devm_drm_panel_add(dev, &pinfo->panel);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to add panel\n");
++
++	for (i = 0; i < DSI_NUM_MIN + pinfo->desc->is_dual_dsi; i++) {
++		pinfo->dsi[i]->lanes = pinfo->desc->lanes;
++		pinfo->dsi[i]->format = pinfo->desc->format;
++		pinfo->dsi[i]->mode_flags = pinfo->desc->mode_flags;
++		pinfo->dsi[i]->dsc = &pinfo->desc->dsc;
++		/* both slices of a line go in one packet */
++		pinfo->dsi[i]->mode_flags |= MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT;
++
++		ret = devm_mipi_dsi_attach(dev, pinfo->dsi[i]);
++		if (ret < 0)
++			return dev_err_probe(dev, ret, "cannot attach to DSI%d host.\n", i);
++	}
++
++	return 0;
++}
++
++static const struct of_device_id nt36532_of_match[] = {
++	{
++		.compatible = "lenovo,nt36532-wqhd",
++		.data = &nt36532_wqhd_desc,
++	},
++	{},
++};
++MODULE_DEVICE_TABLE(of, nt36532_of_match);
++
++static struct mipi_dsi_driver nt36532_driver = {
++	.probe = nt36532_probe,
++	.driver = {
++		.name = "panel-novatek-nt36532",
++		.of_match_table = nt36532_of_match,
++	},
++};
++module_mipi_dsi_driver(nt36532_driver);
++
++MODULE_DESCRIPTION("DRM driver for Novatek NT36532 WQHD based MIPI DSI panels");
++MODULE_LICENSE("GPL");

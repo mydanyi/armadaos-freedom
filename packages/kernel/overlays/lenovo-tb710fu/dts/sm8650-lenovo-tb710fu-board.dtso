@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Lenovo Xiaoxin Pad Pro GT (TB710FU): board additions on top of the
+ * tb710fu-linux board tree, for booting from the kShimC menu in boot_a.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/power/qcom,rpmhpd.h>
+
+/*
+ * kShimC fills this template with the scanout ABL left running and enables
+ * it; it is the console until msm takes over.
+ */
+&{/chosen} {
+	framebuffer0: framebuffer@d5100000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0 0xd5100000 0x0 (3200 * 2000 * 4)>;
+		width = <3200>;
+		height = <2000>;
+		stride = <(3200 * 4)>;
+		format = "a8r8g8b8";
+		status = "disabled";
+	};
+};
+
+/* boot-log rings of the original port's debug kernel; nothing uses them here */
+&blackbox_a_mem {
+	status = "disabled";
+};
+
+&blackbox_b_mem {
+	status = "disabled";
+};
+
+/* the video codec is not brought up yet */
+&iris {
+	status = "disabled";
+};
+
+&uart15 {
+	status = "okay";
+};
+
+/* the unit's own address (little-endian), all zeros = unset */
+&uart14 {
+	bluetooth {
+		local-bd-address = [00 00 00 00 00 00];
+	};
+};
+
+/*
+ * Bind the touch controller to the TB710FU NT36532 driver only:
+ * "novatek,NVT-ts-spi" belongs to the NT36536 driver (nt36536_ts).
+ */
+&spi4 {
+	touchscreen@0 {
+		compatible = "novatek,nt36532-ts-spi";
+	};
+};
+
+/* the unit's own split images from /vendor/firmware_mnt/image */
+&remoteproc_adsp {
+	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mdt",
+			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mdt";
+};
+
+&remoteproc_cdsp {
+	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mdt",
+			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mdt";
+};
+
+/* GPU top level as in the vendor DTB: 903 MHz at TURBO, same ACD value as 834 MHz */
+&gpu_opp_table {
+	opp-903000000 {
+		opp-hz = /bits/ 64 <903000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+		opp-peak-kBps = <14398437>;
+		qcom,opp-acd-level = <0x882a5ffd>;
+	};
+};
