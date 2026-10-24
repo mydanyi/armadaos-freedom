@@ -1,0 +1,109 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:20 +0000
+Subject: [PATCH] drm/msm/dsi: trigger bonded commands from DSI_0 on TB710FU
+
+In the legacy synchronized dual-DSI mode the command is queued on DSI_0
+and triggered from DSI_1.  On TB710FU the panel device sits under DSI_0,
+which has to be the trigger point instead.  Other boards keep DSI_1.
+
+From MeteoricmeteorLL/tb710fu-linux.
+---
+ drivers/gpu/drm/msm/dsi/dsi_manager.c | 42 ++++++++++++++++++---------
+ 1 file changed, 28 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_manager.c b/drivers/gpu/drm/msm/dsi/dsi_manager.c
+index 1b16e1054..56272a63f 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_manager.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_manager.c
+@@ -770,10 +770,22 @@ static int dsi_mgr_bonded_cmd_xfer(const struct mipi_dsi_msg *msg)
+ 	return ret;
+ }
+ 
++/*
++ * In the legacy bonded mode, DSI_1 issues the command trigger for both links.
++ * TB710FU: the panel device sits under DSI_0, so DSI_0 has to be the trigger
++ * point and DSI_1 the queued (non-trigger) host.
++ */
++static int dsi_mgr_sync_trigger_id(void)
++{
++	return of_machine_is_compatible("lenovo,tb710fu") ? DSI_0 : DSI_1;
++}
++
+ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
+ {
+ 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+-	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
++	int trigger_id = dsi_mgr_sync_trigger_id();
++	struct msm_dsi *other_dsi =
++		dsi_mgr_get_dsi(trigger_id == DSI_1 ? DSI_0 : DSI_1);
+ 	struct mipi_dsi_host *host = msm_dsi->host;
+ 	bool is_read = (msg->rx_buf && msg->rx_len);
+ 	bool need_sync = (IS_SYNC_NEEDED() && !is_read);
+@@ -817,14 +829,14 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
+ 
+ 	/* In bonded master case, panel requires the same commands sent to
+ 	 * both DSI links. Host issues the command trigger to both links
+-	 * when DSI_1 calls the cmd transfer function, no matter it happens
+-	 * before or after DSI_0 cmd transfer.
++	 * when the trigger link calls the cmd transfer function, no matter it
++	 * happens before or after the other link's cmd transfer.
+ 	 */
+-	if (need_sync && (id == DSI_0))
++	if (need_sync && (id != trigger_id))
+ 		return is_read ? msg->rx_len : msg->tx_len;
+ 
+-	if (need_sync && msm_dsi0) {
+-		ret = msm_dsi_host_xfer_prepare(msm_dsi0->host, msg);
++	if (need_sync && other_dsi) {
++		ret = msm_dsi_host_xfer_prepare(other_dsi->host, msg);
+ 		if (ret) {
+ 			pr_err("%s: failed to prepare non-trigger host, %d\n",
+ 				__func__, ret);
+@@ -834,7 +846,7 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
+ 	ret = msm_dsi_host_xfer_prepare(host, msg);
+ 	if (ret) {
+ 		pr_err("%s: failed to prepare host, %d\n", __func__, ret);
+-		goto restore_host0;
++		goto restore_other;
+ 	}
+ 
+ 	ret = is_read ? msm_dsi_host_cmd_rx(host, msg) :
+@@ -842,9 +854,9 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
+ 
+ 	msm_dsi_host_xfer_restore(host, msg);
+ 
+-restore_host0:
+-	if (need_sync && msm_dsi0)
+-		msm_dsi_host_xfer_restore(msm_dsi0->host, msg);
++restore_other:
++	if (need_sync && other_dsi)
++		msm_dsi_host_xfer_restore(other_dsi->host, msg);
+ 
+ 	return ret;
+ }
+@@ -852,7 +864,9 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
+ bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len)
+ {
+ 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+-	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
++	int trigger_id = dsi_mgr_sync_trigger_id();
++	struct msm_dsi *other_dsi =
++		dsi_mgr_get_dsi(trigger_id == DSI_1 ? DSI_0 : DSI_1);
+ 	struct mipi_dsi_host *host = msm_dsi->host;
+ 
+ 	/*
+@@ -865,11 +879,11 @@ bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len)
+ 		return true;
+ 	}
+ 
+-	if (IS_SYNC_NEEDED() && (id == DSI_0))
++	if (IS_SYNC_NEEDED() && (id != trigger_id))
+ 		return false;
+ 
+-	if (IS_SYNC_NEEDED() && msm_dsi0)
+-		msm_dsi_host_cmd_xfer_commit(msm_dsi0->host, dma_base, len);
++	if (IS_SYNC_NEEDED() && other_dsi)
++		msm_dsi_host_cmd_xfer_commit(other_dsi->host, dma_base, len);
+ 
+ 	msm_dsi_host_cmd_xfer_commit(host, dma_base, len);
+ 

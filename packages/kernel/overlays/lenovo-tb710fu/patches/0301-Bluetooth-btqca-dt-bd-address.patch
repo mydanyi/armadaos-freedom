@@ -1,0 +1,47 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] Bluetooth: btqca: use the DT local-bd-address on TB710FU
+
+When the board DT carries a non-zero local-bd-address, use it instead of
+the address generated from the serial number, so the unit keeps the
+address it has under Android.
+---
+ drivers/bluetooth/btqca.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/drivers/bluetooth/btqca.c b/drivers/bluetooth/btqca.c
+index 1869f2386..65e9aa5aa 100644
+--- a/drivers/bluetooth/btqca.c
++++ b/drivers/bluetooth/btqca.c
+@@ -6,6 +6,7 @@
+  */
+ #include <linux/module.h>
+ #include <linux/firmware.h>
++#include <linux/property.h>
+ #include <linux/vmalloc.h>
+ #include <linux/of.h>
+ 
+@@ -1131,6 +1132,23 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
+ 		}
+ 	}
+ 
++	/*
++	 * TB710FU: use the unit's own address when the board DT carries one
++	 * in local-bd-address (little-endian, as bdaddr_t); all zeros = unset.
++	 */
++	if (of_machine_is_compatible("lenovo,tb710fu")) {
++		struct device *parent = hdev->dev.parent;
++		bdaddr_t dt_bdaddr;
++
++		if (parent &&
++		    !device_property_read_u8_array(parent, "local-bd-address",
++						   dt_bdaddr.b, sizeof(dt_bdaddr.b)) &&
++		    bacmp(&dt_bdaddr, BDADDR_ANY)) {
++			bacpy(&generated_bdaddr, &dt_bdaddr);
++			bt_dev_info(hdev, "Using DT local-bd-address");
++		}
++	}
++
+ 	/* Set the generated BD_ADDR */
+ 	err = qca_set_bdaddr(hdev, &generated_bdaddr);
+ 	if (err) {
