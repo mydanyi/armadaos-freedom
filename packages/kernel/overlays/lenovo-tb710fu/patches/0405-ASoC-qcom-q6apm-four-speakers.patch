@@ -1,0 +1,77 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:21 +0000
+Subject: [PATCH] ASoC: qcom: q6apm: feed all four TB710FU speakers
+
+The speakers sit on TDM slots 0..3 as left, right, left, right of a
+4-channel, 32-bit backend, while the front end is stereo.  On
+lenovo,tb710fu:
+
+- configure the stream's MFC (and data logging) module for 4ch/S32, so
+  its output matches the backend; with the stream format the MFC fed a
+  2-channel stream into the 4-slot endpoint and the DSP played silence;
+- map the MFC output as FL FR FL FR instead of FL FR LS RS, which left
+  slots 2/3 silent.
+---
+ sound/soc/qcom/qdsp6/audioreach.c | 12 ++++++++++++
+ sound/soc/qcom/qdsp6/q6apm.c      | 18 +++++++++++++++++-
+ 2 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/audioreach.c b/sound/soc/qcom/qdsp6/audioreach.c
+index 5f31cd93d..ef8844f82 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -889,6 +889,18 @@ static int audioreach_mfc_set_media_format(struct q6apm_graph *graph,
+ 		media_format->channel_mapping[j++] = cfg->channel_map[i];
+ 	}
+ 
++	/*
++	 * TB710FU: the four speakers sit on TDM slots 0..3 as left, right,
++	 * left, right.  The front end is stereo; with the default FL FR LS RS
++	 * output map slots 2/3 stay silent, so repeat the stereo pair.
++	 */
++	if (num_channels == 4 && of_machine_is_compatible("lenovo,tb710fu")) {
++		media_format->channel_mapping[0] = PCM_CHANNEL_FL;
++		media_format->channel_mapping[1] = PCM_CHANNEL_FR;
++		media_format->channel_mapping[2] = PCM_CHANNEL_FL;
++		media_format->channel_mapping[3] = PCM_CHANNEL_FR;
++	}
++
+ 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
+ }
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6apm.c b/sound/soc/qcom/qdsp6/q6apm.c
+index 57669db56..8af5514ee 100644
+--- a/sound/soc/qcom/qdsp6/q6apm.c
++++ b/sound/soc/qcom/qdsp6/q6apm.c
+@@ -455,6 +455,8 @@ int q6apm_graph_media_format_pcm(struct q6apm_graph *graph, struct audioreach_mo
+ 	struct audioreach_sub_graph *sgs;
+ 	struct audioreach_container *container;
+ 	struct audioreach_module *module;
++	struct audioreach_module_config ncfg;
++	bool tdm_upmix = of_machine_is_compatible("lenovo,tb710fu");
+ 	int ret;
+ 
+ 	list_for_each_entry(sgs, &info->sg_list, node) {
+@@ -466,7 +468,21 @@ int q6apm_graph_media_format_pcm(struct q6apm_graph *graph, struct audioreach_mo
+ 					(module->module_id == MODULE_ID_SH_MEM_PUSH_MODE))
+ 					continue;
+ 
+-				ret = audioreach_set_media_format(graph, module, cfg);
++				/*
++				 * TB710FU: upmix to 4ch/S32 at the stream tail, so
++				 * the MFC output matches the 4-slot TDM backend and
++				 * all four speakers get data.
++				 */
++				ncfg = *cfg;
++				if (tdm_upmix &&
++				    (module->module_id == MODULE_ID_MFC ||
++				     module->module_id == MODULE_ID_DATA_LOGGING)) {
++					ncfg.bit_width = 32;
++					ncfg.num_channels = 4;
++					audioreach_set_default_channel_mapping(ncfg.channel_map, 4);
++				}
++
++				ret = audioreach_set_media_format(graph, module, &ncfg);
+ 				if (ret)
+ 					return ret;
+ 			}

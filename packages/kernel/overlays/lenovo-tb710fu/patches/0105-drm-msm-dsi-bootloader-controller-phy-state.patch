@@ -1,0 +1,291 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Fri, 23 Oct 2026 06:07:20 +0000
+Subject: [PATCH] drm/msm/dsi: apply the TB710FU bootloader controller and PHY
+ state
+
+The NT36532 of TB710FU only locks with the register state ABL leaves:
+
+- controller: CMD_MODE_EN together with VIDEO_MODE_EN, a 60000 cycle HS
+  timer, CLKOUT_TIMING_CTRL at zero, and a few more.  The command path
+  saves and restores CTRL around DCS transfers, so the state is applied
+  at enable and re-applied every 10 s while enabled.
+- PHY: a set of PLL/lane analog registers, the vendor's explicit
+  D-PHY timings (qcom,mdss-dsi-panel-phy-timings) and the rescode the
+  bootloader writes on SM8650.
+- a transient MDP FIFO underflow while the desktop starts must not
+  sw_reset the link: that blanks the panel and resets the touch
+  firmware on the same NT36532 die.
+
+All of it only applies on lenovo,tb710fu.  The bring-up instrumentation
+of the original port is left out.
+
+From MeteoricmeteorLL/tb710fu-linux.
+---
+ drivers/gpu/drm/msm/dsi/dsi_host.c        |  58 +++++++++++-
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy.c     | 102 ++++++++++++++++++++++
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c |  21 +++++
+ 3 files changed, 180 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index 6ce167994..39fde2678 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -158,6 +158,9 @@ struct msm_dsi_host {
+ 	struct work_struct err_work;
+ 	struct workqueue_struct *workqueue;
+ 
++	/* TB710FU: re-applies the bootloader's controller state */
++	struct delayed_work tb710fu_work;
++
+ 	/* DSI 6G TX buffer*/
+ 	struct drm_gem_object *tx_gem_obj;
+ 	struct drm_gpuvm *vm;
+@@ -1698,7 +1701,13 @@ static void dsi_err_worker(struct work_struct *work)
+ 	}
+ 
+ 	pr_err_ratelimited("%s: status=%x\n", __func__, status);
+-	if (status & DSI_ERR_STATE_MDP_FIFO_UNDERFLOW)
++	/*
++	 * TB710FU: a transient MDP FIFO underflow shows up while the desktop
++	 * starts.  The sw_reset blanks the panel and also resets the NT36532
++	 * touch firmware on the same die, so only log it there.
++	 */
++	if ((status & DSI_ERR_STATE_MDP_FIFO_UNDERFLOW) &&
++	    !of_machine_is_compatible("lenovo,tb710fu"))
+ 		dsi_sw_reset(msm_host);
+ 
+ 	/* It is safe to clear here because error irq is disabled. */
+@@ -1806,6 +1815,44 @@ static void dsi_error(struct msm_dsi_host *msm_host)
+ 	queue_work(msm_host->workqueue, &msm_host->err_work);
+ }
+ 
++/*
++ * TB710FU: the bootloader leaves these controller registers in a state the
++ * driver never produces (CMD_MODE_EN together with VIDEO_MODE_EN, a 60000
++ * cycle HS timer, CLKOUT_TIMING_CTRL at zero).  The NT36532 only streams with
++ * that state.  The command path saves/restores CTRL around DCS transfers, so
++ * it is applied at enable and re-applied periodically while enabled.
++ */
++#define TB710FU_FIXUP_MS	10000
++
++static void tb710fu_ctrl_fixup(struct msm_dsi_host *msm_host)
++{
++	dsi_write(msm_host, REG_DSI_CTRL, 0x1f7);
++	dsi_write(msm_host, 0x03c, 0x06100009);
++	dsi_write(msm_host, REG_DSI_CMD_CFG1, 0x00013c2c);
++	dsi_write(msm_host, 0x080, 0x80000004);
++	dsi_write(msm_host, REG_DSI_HS_TIMER_CTRL, 0x0004ea60);
++	dsi_write(msm_host, REG_DSI_TIMEOUT_STATUS, 0x00000000);
++	dsi_write(msm_host, REG_DSI_CLKOUT_TIMING_CTRL, 0x00000000);
++	dsi_write(msm_host, 0x114, 0x00001c00);
++	dsi_write(msm_host, 0x1b4, 0x00110006);
++	dsi_write(msm_host, 0x1c8, 0x00000007);
++	dsi_write(msm_host, 0x32c, 0x33531000);
++	dsi_write(msm_host, 0x158, 0x00000000);
++}
++
++static void tb710fu_fixup_worker(struct work_struct *work)
++{
++	struct msm_dsi_host *msm_host = container_of(to_delayed_work(work),
++					struct msm_dsi_host, tb710fu_work);
++
++	if (!msm_host->enabled)
++		return;
++
++	tb710fu_ctrl_fixup(msm_host);
++	queue_delayed_work(msm_host->workqueue, &msm_host->tb710fu_work,
++			   msecs_to_jiffies(TB710FU_FIXUP_MS));
++}
++
+ static irqreturn_t dsi_host_irq(int irq, void *ptr)
+ {
+ 	struct msm_dsi_host *msm_host = ptr;
+@@ -2299,6 +2346,7 @@ int msm_dsi_host_init(struct msm_dsi *msm_dsi)
+ 		return -ENOMEM;
+ 
+ 	INIT_WORK(&msm_host->err_work, dsi_err_worker);
++	INIT_DELAYED_WORK(&msm_host->tb710fu_work, tb710fu_fixup_worker);
+ 
+ 	msm_dsi->id = msm_host->id;
+ 
+@@ -2720,6 +2768,12 @@ int msm_dsi_host_enable(struct mipi_dsi_host *host)
+ 	 * }
+ 	 */
+ 	msm_host->enabled = true;
++
++	if (of_machine_is_compatible("lenovo,tb710fu")) {
++		tb710fu_ctrl_fixup(msm_host);
++		queue_delayed_work(msm_host->workqueue, &msm_host->tb710fu_work,
++				   msecs_to_jiffies(TB710FU_FIXUP_MS));
++	}
+ 	return 0;
+ }
+ 
+@@ -2728,6 +2782,8 @@ int msm_dsi_host_disable(struct mipi_dsi_host *host)
+ 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+ 
+ 	msm_host->enabled = false;
++	if (of_machine_is_compatible("lenovo,tb710fu"))
++		cancel_delayed_work_sync(&msm_host->tb710fu_work);
+ 	dsi_op_mode_config(msm_host,
+ 		!!(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO), false);
+ 
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+index c3d60fd84..d85640635 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+@@ -808,6 +808,106 @@ void __exit msm_dsi_phy_driver_unregister(void)
+ 	platform_driver_unregister(&dsi_phy_platform_driver);
+ }
+ 
++/*
++ * TB710FU: the bootloader programs a set of PHY PLL/lane analog registers
++ * (drive strength / bias tuning) differently from this driver, and the
++ * NT36532 link only comes up with the bootloader's values.  Mirror them on
++ * every enable; offsets are relative to the PHY base of each link.
++ */
++struct tb710fu_phy_reg { u16 off; u32 val; };
++static const struct tb710fu_phy_reg tb710fu_phy_fixup_dsi0[] = {
++	{ 0x0f4, 0x0000003d },
++	{ 0x138, 0x00000096 },
++	{ 0x528, 0x000000c0 },
++	{ 0x5ac, 0x0000003f },
++	{ 0x5e4, 0x0000000c },
++	{ 0x698, 0x00000000 },
++	{ 0x6b8, 0x0000002a },
++	{ 0x6bc, 0x00000056 },
++	{ 0x6c0, 0x00000096 },
++	{ 0x6c4, 0x00000000 },
++	{ 0x6c8, 0x00000000 },
++	{ 0x6f4, 0x000000af },
++	{ 0x6f8, 0x00000002 },
++	{ 0x718, 0x0000002a },
++	{ 0x730, 0x00000011 },
++	{ 0x748, 0x00000020 },
++	{ 0x774, 0x00000000 },
++	{ 0x77c, 0x00000076 },
++	{ 0x8f4, 0x0000003d },
++	{ 0x938, 0x00000096 },
++	{ 0x93c, 0x0000000b },
++	{ 0x944, 0x00000058 },
++};
++static const struct tb710fu_phy_reg tb710fu_phy_fixup_dsi1[] = {
++	{ 0x03c, 0x00000000 },
++	{ 0x0f4, 0x0000003d },
++	{ 0x138, 0x00000096 },
++	{ 0x140, 0x00000019 },
++	{ 0x528, 0x000000c0 },
++	{ 0x590, 0x00000029 },
++	{ 0x594, 0x0000002a },
++	{ 0x5bc, 0x00000010 },
++	{ 0x5e0, 0x00000041 },
++	{ 0x5e4, 0x000000ab },
++	{ 0x5e8, 0x0000006a },
++	{ 0x660, 0x0000000c },
++	{ 0x670, 0x00000054 },
++	{ 0x6b0, 0x00000022 },
++	{ 0x6b4, 0x00000000 },
++	{ 0x6b8, 0x00000000 },
++	{ 0x6bc, 0x00000000 },
++	{ 0x6c0, 0x00000000 },
++	{ 0x6c4, 0x00000000 },
++	{ 0x6c8, 0x00000000 },
++	{ 0x6cc, 0x00000001 },
++	{ 0x6f4, 0x00000000 },
++	{ 0x6f8, 0x00000000 },
++	{ 0x718, 0x00000082 },
++	{ 0x740, 0x00000000 },
++	{ 0x748, 0x00000040 },
++	{ 0x758, 0x00000003 },
++	{ 0x77c, 0x00000000 },
++	{ 0x83c, 0x00000000 },
++	{ 0x8f4, 0x0000003d },
++	{ 0x938, 0x00000096 },
++	{ 0x940, 0x00000019 },
++};
++
++static void tb710fu_phy_fixup(struct msm_dsi_phy *phy)
++{
++	const struct tb710fu_phy_reg *tbl;
++	unsigned int n = 0, i;
++	struct resource *res;
++	void __iomem *base;
++	resource_size_t start;
++
++	if (!of_machine_is_compatible("lenovo,tb710fu"))
++		return;
++
++	res = platform_get_resource(phy->pdev, IORESOURCE_MEM, 0);
++	if (!res)
++		return;
++	start = res->start;
++	if (start == 0x0ae95000) {
++		tbl = tb710fu_phy_fixup_dsi0;
++		n = ARRAY_SIZE(tb710fu_phy_fixup_dsi0);
++	} else if (start == 0x0ae97000) {
++		tbl = tb710fu_phy_fixup_dsi1;
++		n = ARRAY_SIZE(tb710fu_phy_fixup_dsi1);
++	} else {
++		return;
++	}
++
++	base = ioremap(start, 0x2000);
++	if (!base)
++		return;
++	for (i = 0; i < n; i++)
++		writel_relaxed(tbl[i].val, base + tbl[i].off);
++	wmb();
++	iounmap(base);
++}
++
+ int msm_dsi_phy_enable(struct msm_dsi_phy *phy,
+ 			struct msm_dsi_phy_clk_request *clk_req,
+ 			struct msm_dsi_phy_shared_timings *shared_timings)
+@@ -840,6 +940,8 @@ int msm_dsi_phy_enable(struct msm_dsi_phy *phy,
+ 		goto phy_en_fail;
+ 	}
+ 
++	tb710fu_phy_fixup(phy);
++
+ 	memcpy(shared_timings, &phy->timing.shared_timings,
+ 	       sizeof(*shared_timings));
+ 
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 6a65e7b5c..4f02f4ac0 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -1051,6 +1051,24 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 		return -EINVAL;
+ 	}
+ 
++	/*
++	 * TB710FU: the vendor panel description carries explicit PHY timings
++	 * (qcom,mdss-dsi-panel-phy-timings) and the NT36532 does not lock its
++	 * HS receiver with the calculated ones.  T9..T11 already match.
++	 */
++	if (of_machine_is_compatible("lenovo,tb710fu")) {
++		timing->clk_zero = 0x27;
++		timing->clk_prepare = 0x0a;
++		timing->clk_trail = 0x0a;
++		timing->hs_exit = 0x1b;
++		timing->hs_zero = 0x19;
++		timing->hs_prepare = 0x0a;
++		timing->hs_trail = 0x0b;
++		timing->hs_rqst = 0x0a;
++		timing->shared_timings.clk_pre = 0x20;
++		timing->shared_timings.clk_post = 0x0f;
++	}
++
+ 	if (dsi_phy_hw_v4_0_is_pll_on(phy))
+ 		pr_warn("PLL turned on before configuring PHY\n");
+ 
+@@ -1122,6 +1140,9 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 			vreg_ctrl_1 = 0x19;
+ 			glbl_rescode_top_ctrl = less_than_1500_mhz ? 0x3c :  0x03;
+ 			glbl_rescode_bot_ctrl = less_than_1500_mhz ? 0x38 :  0x3c;
++			/* TB710FU: match the bootloader, which writes 0x3d / 0x01 */
++			if (of_machine_is_compatible("lenovo,tb710fu"))
++				glbl_rescode_top_ctrl = less_than_1500_mhz ? 0x3d : 0x01;
+ 		}
+ 	} else if ((phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3)) {
+ 		if (phy->cphy_mode) {

@@ -1,0 +1,218 @@
+From: Prasad Kumpatla <prasad.kumpatla@oss.qualcomm.com>
+Date: Tue, 4 Aug 2026 12:33:06 +0530
+Subject: [PATCH] ASoC: qcom: common: add DAI-node TDM slot helpers
+
+Add common helpers to parse standard dai-tdm-slot-* properties from the
+CPU and codec child nodes of a backend DAI link and apply the result to
+the active DAIs.
+
+QCOM machine drivers already use qcom_snd_parse_of() to build links from
+DT, but they lacked a shared helper to translate endpoint TDM properties
+into snd_soc_dai_set_tdm_slot() calls. Boards therefore had to carry ad
+hoc parsing or rely on non-standard DT properties.
+
+The helpers parse endpoint masks, validate the shared slot count and
+slot width, and program CPU and codec DAIs with the resulting slot
+configuration. A cfg-based apply helper is provided for callers that
+already parsed the DT data and want to avoid a second DT traversal.
+
+Signed-off-by: Prasad Kumpatla <prasad.kumpatla@oss.qualcomm.com>
+Link: https://patch.msgid.link/20260804070307.117119-7-prasad.kumpatla@oss.qualcomm.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ sound/soc/qcom/common.c | 155 ++++++++++++++++++++++++++++++++++++++++
+ sound/soc/qcom/common.h |  14 ++++
+ 2 files changed, 169 insertions(+)
+
+diff --git a/sound/soc/qcom/common.c b/sound/soc/qcom/common.c
+index edc461169..6ab4af71e 100644
+--- a/sound/soc/qcom/common.c
++++ b/sound/soc/qcom/common.c
+@@ -23,6 +23,161 @@ static const struct snd_soc_dapm_widget qcom_jack_snd_widgets[] = {
+ 	SND_SOC_DAPM_SPK("DP7 Jack", NULL),
+ };
+ 
++static struct device_node *qcom_snd_get_link_node(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_card *card = rtd->card;
++	struct of_phandle_args args;
++	int ret;
++
++	if (!card->dev || !card->dev->of_node)
++		return NULL;
++
++	for_each_available_child_of_node_scoped(card->dev->of_node, np) {
++		struct device_node *cpu_np __free(device_node) =
++			of_get_child_by_name(np, "cpu");
++
++		if (!cpu_np)
++			continue;
++
++		ret = of_parse_phandle_with_args(cpu_np, "sound-dai", "#sound-dai-cells", 0,
++						 &args);
++		if (ret)
++			continue;
++
++		if (args.np == rtd->dai_link->cpus[0].of_node &&
++		    args.args_count == 1 && args.args[0] == cpu_dai->id) {
++			of_node_put(args.np);
++			return of_node_get(np);
++		}
++
++		of_node_put(args.np);
++	}
++
++	return NULL;
++}
++
++static int qcom_snd_parse_tdm_slot(struct device_node *np,
++				   struct qcom_snd_tdm_slot_cfg *cfg)
++{
++	memset(cfg, 0, sizeof(*cfg));
++
++	return snd_soc_of_parse_tdm_slot(np, &cfg->tx_mask, &cfg->rx_mask,
++					 &cfg->slots, &cfg->slot_width);
++}
++
++static int qcom_snd_normalize_tdm_slots(struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++					struct qcom_snd_tdm_slot_cfg *codec_cfg)
++{
++	unsigned int slots;
++	unsigned int slot_width;
++
++	if (cpu_cfg->slots && codec_cfg->slots && cpu_cfg->slots != codec_cfg->slots)
++		return -EINVAL;
++
++	if (cpu_cfg->slot_width && codec_cfg->slot_width &&
++	    cpu_cfg->slot_width != codec_cfg->slot_width)
++		return -EINVAL;
++
++	slots = cpu_cfg->slots ?: codec_cfg->slots;
++	if (!slots)
++		return 0;
++
++	slot_width = cpu_cfg->slot_width ?: codec_cfg->slot_width;
++	if (!slot_width)
++		return -EINVAL;
++
++	cpu_cfg->slots = slots;
++	codec_cfg->slots = slots;
++	cpu_cfg->slot_width = slot_width;
++	codec_cfg->slot_width = slot_width;
++
++	return 0;
++}
++
++static int qcom_snd_parse_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd,
++					struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++					struct qcom_snd_tdm_slot_cfg *codec_cfg)
++{
++	struct device_node *link_np __free(device_node) = qcom_snd_get_link_node(rtd);
++	int ret;
++
++	if (!link_np)
++		return -EINVAL;
++
++	struct device_node *cpu_np __free(device_node) =
++		of_get_child_by_name(link_np, "cpu");
++	struct device_node *codec_np __free(device_node) =
++		of_get_child_by_name(link_np, "codec");
++	if (!cpu_np || !codec_np)
++		return -EINVAL;
++
++	ret = qcom_snd_parse_tdm_slot(cpu_np, cpu_cfg);
++	if (ret)
++		return ret;
++
++	return qcom_snd_parse_tdm_slot(codec_np, codec_cfg);
++}
++
++int qcom_snd_get_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd,
++			       struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++			       struct qcom_snd_tdm_slot_cfg *codec_cfg)
++{
++	int ret;
++
++	ret = qcom_snd_parse_dai_tdm_slots(rtd, cpu_cfg, codec_cfg);
++	if (ret)
++		return ret;
++
++	return qcom_snd_normalize_tdm_slots(cpu_cfg, codec_cfg);
++}
++EXPORT_SYMBOL_GPL(qcom_snd_get_dai_tdm_slots);
++
++int qcom_snd_apply_dai_tdm_slots_cfg(struct snd_soc_pcm_runtime *rtd,
++				     const struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++				     const struct qcom_snd_tdm_slot_cfg *codec_cfg)
++{
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *codec_dai;
++	int i;
++	int ret;
++
++	if (!cpu_cfg->slots)
++		return 0;
++
++	ret = snd_soc_dai_set_tdm_slot(cpu_dai, cpu_cfg->tx_mask, cpu_cfg->rx_mask,
++				       cpu_cfg->slots, cpu_cfg->slot_width);
++	if (ret)
++		return ret;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai) {
++		ret = snd_soc_dai_set_tdm_slot(codec_dai,
++					       codec_cfg->tx_mask,
++					       codec_cfg->rx_mask,
++					       codec_cfg->slots,
++					       codec_cfg->slot_width);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_snd_apply_dai_tdm_slots_cfg);
++
++int qcom_snd_apply_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd)
++{
++	struct qcom_snd_tdm_slot_cfg cpu_cfg;
++	struct qcom_snd_tdm_slot_cfg codec_cfg;
++	int ret;
++
++	ret = qcom_snd_get_dai_tdm_slots(rtd, &cpu_cfg, &codec_cfg);
++	if (ret)
++		return ret == -EINVAL ? 0 : ret;
++
++	return qcom_snd_apply_dai_tdm_slots_cfg(rtd, &cpu_cfg, &codec_cfg);
++}
++EXPORT_SYMBOL_GPL(qcom_snd_apply_dai_tdm_slots);
++
+ int qcom_snd_parse_of(struct snd_soc_card *card)
+ {
+ 	struct device *dev = card->dev;
+diff --git a/sound/soc/qcom/common.h b/sound/soc/qcom/common.h
+index ee6662885..02b24caec 100644
+--- a/sound/soc/qcom/common.h
++++ b/sound/soc/qcom/common.h
+@@ -9,7 +9,21 @@
+ 
+ #define LPASS_MAX_PORT			(SENARY_MI2S_TX + 1)
+ 
++struct qcom_snd_tdm_slot_cfg {
++	unsigned int tx_mask;
++	unsigned int rx_mask;
++	unsigned int slots;
++	unsigned int slot_width;
++};
++
+ int qcom_snd_parse_of(struct snd_soc_card *card);
++int qcom_snd_get_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd,
++			       struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++			       struct qcom_snd_tdm_slot_cfg *codec_cfg);
++int qcom_snd_apply_dai_tdm_slots_cfg(struct snd_soc_pcm_runtime *rtd,
++				     const struct qcom_snd_tdm_slot_cfg *cpu_cfg,
++				     const struct qcom_snd_tdm_slot_cfg *codec_cfg);
++int qcom_snd_apply_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd);
+ int qcom_snd_wcd_jack_setup(struct snd_soc_pcm_runtime *rtd,
+ 			    struct snd_soc_jack *jack, bool *jack_setup);
+ int qcom_snd_dp_jack_setup(struct snd_soc_pcm_runtime *rtd,
