@@ -7,8 +7,13 @@ Content-Transfer-Encoding: 8bit
 WCN7860 firmware can describe two PHY frequency ranges even when the
 driver exposes one pdev and one logical radio in DBS_OR_SBS mode.  Split
 requests at the firmware-derived range boundary only for this hardware
-configuration on Baldur; leave other hardware and machines on their
-existing scan path.
+configuration on Baldur and Elden; leave other hardware and machines on
+their existing scan path.
+
+Elden needs this after the WCN7860 support and firmware-initialization
+patches switch it from the older PEACH/hw2.0 firmware path to the newer
+WCN7860/hw2.0 firmware. Startup AP discovery can remain pending with
+that newer firmware configuration unless range scans are enabled here.
 
 Associated range scans run as one-channel batches: TX is stopped and
 drained before each batch, the firmware rest period is observed between
@@ -30,7 +35,7 @@ The code is the original author's work, rebased onto these preimages; the
 rebase adds no Signed-off-by.
 
 ---
- 5 files changed, 315 insertions(+), 8 deletions(-)
+ 5 files changed, 316 insertions(+), 8 deletions(-)
 ---
 
 diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
@@ -45,7 +50,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  
  #include "mac.h"
  #include "core.h"
-@@ -5290,6 +5292,188 @@
+@@ -5290,6 +5292,189 @@
  	return NULL;
  }
  
@@ -59,7 +64,8 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
 +	u32 boundary;
 +	int i;
 +
-+	if (!of_machine_is_compatible("lenovo,baldur"))
++	if (!of_machine_is_compatible("lenovo,baldur") &&
++	    !of_machine_is_compatible("lenovo,elden"))
 +		return 0;
 +
 +	if (ab->hw_rev != ATH12K_HW_WCN7860_HW20 ||
@@ -234,7 +240,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  void __ath12k_mac_scan_finish(struct ath12k *ar)
  {
  	struct ieee80211_hw *hw = ath12k_ar_to_hw(ar);
-@@ -5315,6 +5499,8 @@
+@@ -5315,6 +5500,8 @@
  void ath12k_mac_scan_finish(struct ath12k *ar)
  {
  	spin_lock_bh(&ar->data_lock);
@@ -243,7 +249,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  	__ath12k_mac_scan_finish(ar);
  	spin_unlock_bh(&ar->data_lock);
  }
-@@ -5435,12 +5621,21 @@
+@@ -5435,12 +5622,21 @@
  					 scan.vdev_clean_wk);
  	struct ath12k_hw *ah = ar->ah;
  	struct ath12k_link_vif *arvif;
@@ -266,7 +272,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  
  	/* The scan vdev has already been deleted. This can occur when a
  	 * new scan request is made on the same vif with a different
-@@ -5449,7 +5644,46 @@
+@@ -5449,7 +5645,46 @@
  	 * arvif is already deleted. Alternatively, if the scan vdev is not
  	 * being used as an actual vdev, then do not delete it.
  	 */
@@ -314,7 +320,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  		goto work_complete;
  
  	ath12k_dbg(ar->ab, ATH12K_DBG_MAC, "mac clean scan vdev (link id %u)",
-@@ -5459,6 +5693,21 @@
+@@ -5459,6 +5694,21 @@
  	ath12k_mac_unassign_link_vif(arvif);
  
  work_complete:
@@ -336,7 +342,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  	spin_lock_bh(&ar->data_lock);
  	ar->scan.arvif = NULL;
  	if (!ar->scan.is_roc) {
-@@ -5689,9 +5938,11 @@
+@@ -5689,9 +5939,11 @@
  	struct ath12k_link_vif *arvif;
  	struct cfg80211_scan_request *req = &hw_req->req;
  	struct ath12k_wmi_scan_req_arg *arg = NULL;
@@ -348,7 +354,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  	bool create = true;
  
  	lockdep_assert_wiphy(hw->wiphy);
-@@ -5807,7 +6058,32 @@
+@@ -5807,7 +6059,32 @@
  	for (i = 0; i < arg->num_chan; i++)
  		arg->chan_list[i] = chan_list[i]->center_freq;
  
@@ -382,7 +388,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  	if (ret) {
  		if (ret == -EBUSY)
  			ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
-@@ -5815,6 +6091,9 @@
+@@ -5815,6 +6092,9 @@
  		else
  			ath12k_warn(ar->ab, "failed to start hw scan: %d\n", ret);
  
@@ -392,7 +398,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  		spin_lock_bh(&ar->data_lock);
  		ar->scan.state = ATH12K_SCAN_IDLE;
  		ar->scan.finish_queued = false;
-@@ -5827,7 +6106,7 @@
+@@ -5827,7 +6107,7 @@
  	/* Add a margin to account for event/command processing */
  	wiphy_delayed_work_queue(ath12k_ar_to_hw(ar)->wiphy,
  				 &ar->scan.timeout,
@@ -401,7 +407,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  						  ATH12K_MAC_SCAN_TIMEOUT_MSECS));
  
  exit:
-@@ -5908,6 +6187,7 @@
+@@ -5908,6 +6188,7 @@
  			ar = arvif->ar;
  			if (ar->scan.arvif == arvif) {
  				wiphy_work_cancel(hw->wiphy, &ar->scan.vdev_clean_wk);
@@ -409,7 +415,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  				spin_lock_bh(&ar->data_lock);
  				ar->scan.arvif = NULL;
  				ar->scan.state = ATH12K_SCAN_IDLE;
-@@ -10082,6 +10362,7 @@
+@@ -10082,6 +10363,7 @@
  
  	wiphy_delayed_work_cancel(ath12k_ar_to_hw(ar)->wiphy, &ar->scan.timeout);
  	wiphy_work_cancel(ath12k_ar_to_hw(ar)->wiphy, &ar->scan.vdev_clean_wk);
@@ -417,7 +423,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/at
  	cancel_work_sync(&ar->regd_channel_update_work);
  	cancel_work_sync(&ar->regd_update_work);
  	cancel_work_sync(&ar->ab->rfkill_work);
-@@ -11085,6 +11366,7 @@
+@@ -11085,6 +11367,7 @@
  		 */
  		if (ar->scan.arvif == arvif) {
  			wiphy_work_cancel(hw->wiphy, &ar->scan.vdev_clean_wk);

@@ -969,7 +969,7 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0188-wifi-ath12k-baldur-range-scans.patch`
   source: armada
   upstream: local
-  notes: Merges runtime fixes 1022 and 1023 and the three band-index corrections of reg-three-fix.diff.txt onto the unified ath12k scan lifecycle. WCN7860 on Baldur splits range scans at the firmware boundary and runs associated scans as drained TX batches, and firmware recovery takes over an interrupted TX pause. Other hardware keeps the existing scan path.
+  notes: Merges runtime fixes 1022 and 1023 and the three band-index corrections of reg-three-fix.diff.txt onto the unified ath12k scan lifecycle. WCN7860 on Baldur and Elden splits range scans at the firmware boundary and runs associated scans as drained TX batches, and firmware recovery takes over an interrupted TX pause. Elden needs this extension after the WCN7860 support and firmware-initialization patches switch it from the older `PEACH/hw2.0` firmware path to the newer `WCN7860/hw2.0` firmware. The extension retains the WCN7860 HW2.0, single-pdev, single-radio and DBS_OR_SBS guards; other machines and hardware keep the existing scan path.
 - `patches/0189-Bluetooth-qca-baldur-brahma.patch`
   source: armada
   upstream: local
