@@ -136,6 +136,10 @@ COPY decky/freedom-control/system_files/usr/share/armada/power-profiles-SM8850.c
 FROM ${BASE_IMAGE} AS armada-rootfs
 ARG ARMADA_VERSION=unknown
 LABEL org.opencontainers.image.version="${ARMADA_VERSION}"
+# CI sets the published labels through the chunkah config; this one is for
+# local builds, so build-edl-package-local can pass the image's revision on.
+ARG ARMADA_REVISION=unknown
+LABEL org.opencontainers.image.revision="${ARMADA_REVISION}"
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=steam-bootstrap,source=/steam-bootstrap,target=/packages/steam-bootstrap \

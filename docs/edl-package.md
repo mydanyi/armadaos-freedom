@@ -83,6 +83,53 @@ given, it must cover every selected model exactly once and no runtime is built;
 otherwise every selected runtime is built in a container from the runtime
 snapshot that the configuration names.
 
+## Package a locally built image
+
+An image built with `just build` carries its version label and a revision
+label, the commit checked out when it was built. Package it with
+
+```console
+$ just build-edl-package-local ORIGIN [IMAGE] [TAG]
+```
+
+`ORIGIN` is the signed origin the installed system updates from. A local
+image has no channel to derive it from, and the wrapper only accepts
+`ostree-image-signed:docker://ghcr.io/mydanyi/armadaos-freedom:` followed by
+`stable`, `beta` or `testing` (optionally `@sha256:...`). `IMAGE` and `TAG`
+default to the image `just build` writes. The recipe reads the version and
+revision labels with `skopeo`, copies the image from local container storage
+into a temporary OCI layout (the producer reads it as `oci:<dir>:latest`, and
+the copy, several GB, is removed afterwards), and calls `build-edl-package`
+with the layout, its manifest digest, the labels and `ORIGIN`. As there, the
+checked-out `HEAD` must be the commit the image was built from, and every
+registered profile is packaged. An image without the labels, for example one
+built by a plain `podman build`, is rejected before anything is copied.
+
+Local hosts differ from the CI runner in a few ways:
+
+- `skopeo` must be installed. The wrapper runs `docker` with
+  `--cap-add SYS_ADMIN` and loop devices; on a podman host, a `docker` command
+  that calls **rootful** podman (for example `podman-docker` in a rootful
+  podman machine) works.
+- The producer needs two unused `/dev/loopN` devices and stops with "two
+  unused /dev/loopN devices are required ...; found N" otherwise. A minimal VM
+  may only have `/dev/loop-control`; loop devices can be added through it, for
+  example
+  `sudo python3 -c 'import fcntl,os; fd=os.open("/dev/loop-control",os.O_RDWR); [fcntl.ioctl(fd,0x4C80,i) for i in range(4)]'`
+  (`LOOP_CTL_ADD` for loop0-3).
+- On an SELinux host (for example a Fedora CoreOS podman machine), the
+  bind-mounted paths (source, work, and any `--devices-config` or `--runtime`
+  files) either need the `container_file_t` label, or the containers need to
+  run with `label = false`. Importing the image into ostree also writes the
+  image's own `security.selinux` attributes: the producer container needs
+  `CAP_MAC_ADMIN` for that (otherwise `EACCES`), and while the host enforces a
+  policy that does not know those labels the write still fails with
+  `Invalid argument`, so put the host in permissive mode (`setenforce 0`) for
+  the build. A `containers.conf` override with `label = false` and
+  `MAC_ADMIN` added to `default_capabilities` covers the container side; set
+  `CONTAINERS_CONF_OVERRIDE` only for this command, since it applies to every
+  container.
+
 ## Device configuration
 
 `build_files/edl-devices.json` uses `schemaVersion` 1, with one global

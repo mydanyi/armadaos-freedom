@@ -57,6 +57,22 @@ $ bash /PATH/TO/repo/build_files/build-edl-package.sh \
 
 每个选中的机型都需要一份 runtime。若给出 `--runtime MODEL=绝对文件路径`，则必须为每个选中机型各提供一次，且不再构建 runtime；否则所有选中的 runtime 都会在容器中依据配置指定的 runtime 快照构建。
 
+## 打包本地构建的镜像
+
+用 `just build` 构建的镜像带有版本标签，以及修订标签（构建时检出的提交）。用下面的命令打包：
+
+```console
+$ just build-edl-package-local ORIGIN [IMAGE] [TAG]
+```
+
+`ORIGIN` 是装好的系统用来更新的签名来源。本地镜像没有渠道，无法自动推导；封装脚本只接受 `ostree-image-signed:docker://ghcr.io/mydanyi/armadaos-freedom:` 加 `stable`、`beta` 或 `testing`（可带 `@sha256:...`）。`IMAGE` 与 `TAG` 默认就是 `just build` 写出的镜像。配方用 `skopeo` 读取版本和修订标签，把镜像从本地容器存储复制成临时 OCI 布局（生成器按 `oci:<dir>:latest` 读取；这份副本有几 GB，结束后会删除），再用该布局、其清单摘要、两个标签和 `ORIGIN` 调用 `build-edl-package`。与该配方一样，检出的 `HEAD` 必须是构建镜像时的提交，并会打包全部已登记的机型。没有这两个标签的镜像（例如直接用 `podman build` 构建的）在复制前就会被拒绝。
+
+本地主机与 CI 运行器有几处不同：
+
+- 需要安装 `skopeo`。封装脚本用 `--cap-add SYS_ADMIN` 和 loop 设备运行 `docker`；在 podman 主机上，提供一个调用 **rootful** podman 的 `docker` 命令（例如 rootful podman machine 里的 `podman-docker`）即可。
+- 生成器需要两个空闲的 `/dev/loopN`，否则报 "two unused /dev/loopN devices are required ...; found N" 并停止。精简的虚拟机里可能只有 `/dev/loop-control`，可以通过它添加 loop 设备，例如 `sudo python3 -c 'import fcntl,os; fd=os.open("/dev/loop-control",os.O_RDWR); [fcntl.ioctl(fd,0x4C80,i) for i in range(4)]'`（用 `LOOP_CTL_ADD` 添加 loop0-3）。
+- 在启用 SELinux 的主机上（例如 Fedora CoreOS 的 podman machine），被绑定挂载的路径（源码、工作目录，以及 `--devices-config`、`--runtime` 指定的文件）要么打上 `container_file_t` 标签，要么让容器以 `label = false` 运行。把镜像导入 ostree 时还会写入镜像自身的 `security.selinux` 属性：生成器容器需要 `CAP_MAC_ADMIN`（否则报 `EACCES`）；主机以不认识这些标签的策略处于 enforcing 时，写入仍会报 `Invalid argument`，所以构建期间把主机设为 permissive（`setenforce 0`）。用一个 `containers.conf` 覆盖设置 `label = false` 并在 `default_capabilities` 中加入 `MAC_ADMIN`，可以满足容器这一侧；`CONTAINERS_CONF_OVERRIDE` 只在执行这条命令时设置，因为它对所有容器生效。
+
 ## 机型配置
 
 `build_files/edl-devices.json` 使用 `schemaVersion` 1，包含一个全局 `runtimeSource` 和以机型 ID 为键的 `profiles` 对象：
