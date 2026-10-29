@@ -179,12 +179,16 @@ Each profile declares one diagnostic mode:
   `rd.break`.
 
 The Gen 4 profile (TB322FC) uses `rd-break`; the Gen 5 profile (TB323FU) uses
-`verbose` and supplies its board arguments through `extraArgs`.
+`verbose` and supplies its board arguments through `extraArgs`. The Xiaoxin Pad
+Pro GT profile (TB710FU) uses `rd-break` and passes `clk_ignore_unused
+pd_ignore_unused regulator_ignore_unused` through `extraArgs`: Linux then never
+switches off the clocks, power domains and regulators the bootloader left on,
+including those of the display it is still scanning out.
 
 `runtimeCmakeArgs` is a per-profile source option. The Gen 5 profile passes
 `-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=ON`, which limits the original Android
-touch controller to 4.8 MHz at handoff; the Gen 4 profile passes `OFF`, and the
-CMake default is `OFF`.
+touch controller to 4.8 MHz at handoff; the Gen 4 and TB710FU profiles pass
+`OFF`, and the CMake default is `OFF`.
 
 ## Flashing with the Windows installer
 

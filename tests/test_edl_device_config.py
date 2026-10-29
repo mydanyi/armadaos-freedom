@@ -107,7 +107,33 @@ TB323FU_PROFILE = {
     },
 }
 
-REAL_PROFILES = {"TB322FC": TB322FC_PROFILE, "TB323FU": TB323FU_PROFILE}
+TB710FU_PROFILE = {
+    "displayName": "Lenovo Xiaoxin Pad Pro GT",
+    "compatible": {"soc": "SM8650", "device": "tb710fu"},
+    "dtb": "qcom/sm8650-lenovo-tb710fu.dtb",
+    "required": ["lenovo,tb710fu", "qcom,sm8650"],
+    "forbidden": [
+        "lenovo,elden",
+        "lenovo,tb322fc",
+        "lenovo,baldur",
+        "lenovo,tb323fu",
+        "qcom,sm8750",
+        "qcom,sm8850",
+        "qcom,kaanapali",
+    ],
+    "extraArgs": ["clk_ignore_unused", "pd_ignore_unused", "regulator_ignore_unused"],
+    "runtimeConfig": "configs/tb710fu_android_defconfig",
+    "runtimeCmakeArgs": ["-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"],
+    "bootPartitionBytes": BOOT_PARTITION_BYTES,
+    "diagnosticMode": "rd-break",
+    "bootRequirements": {"earlyFirmware": [], "earlyDrivers": [], "firmwareSha256": {}},
+}
+
+REAL_PROFILES = {
+    "TB322FC": TB322FC_PROFILE,
+    "TB323FU": TB323FU_PROFILE,
+    "TB710FU": TB710FU_PROFILE,
+}
 
 TEST_THIRD_PROFILE = {
     "displayName": "Synthetic Test Device",
@@ -303,7 +329,7 @@ class RealConfigurationTests(TempConfigMixin, unittest.TestCase):
 
     def test_document_keeps_json_lists_and_model_order(self):
         document = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(list(document["profiles"]), ["TB322FC", "TB323FU"])
+        self.assertEqual(list(document["profiles"]), ["TB322FC", "TB323FU", "TB710FU"])
         for name, profile in document["profiles"].items():
             with self.subTest(profile=name):
                 for field in ("required", "forbidden", "extraArgs", "runtimeCmakeArgs"):
@@ -315,9 +341,10 @@ class RealConfigurationTests(TempConfigMixin, unittest.TestCase):
         configuration = HELPER.load_configuration(CONFIG_PATH)
         self.assertEqual(configuration["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(configuration["runtimeSource"], RUNTIME_SOURCE)
-        self.assertEqual(list(configuration["profiles"]), ["TB322FC", "TB323FU"])
+        self.assertEqual(list(configuration["profiles"]), ["TB322FC", "TB323FU", "TB710FU"])
         self.assertEqual(configuration["profiles"]["TB322FC"], TB322FC_PROFILE)
         self.assertEqual(configuration["profiles"]["TB323FU"], TB323FU_PROFILE)
+        self.assertEqual(configuration["profiles"]["TB710FU"], TB710FU_PROFILE)
 
     def test_load_configuration_preserves_list_order(self):
         configuration = HELPER.load_configuration(CONFIG_PATH)
@@ -340,7 +367,9 @@ class SelectionTests(unittest.TestCase):
         self.configuration = HELPER.load_configuration(CONFIG_PATH)
 
     def test_default_selects_every_model_in_configuration_order(self):
-        self.assertEqual(HELPER.select_models(self.configuration), ("TB322FC", "TB323FU"))
+        self.assertEqual(
+            HELPER.select_models(self.configuration), ("TB322FC", "TB323FU", "TB710FU")
+        )
 
     def test_single_model_selection(self):
         self.assertEqual(HELPER.select_models(self.configuration, ["TB323FU"]), ("TB323FU",))
@@ -439,7 +468,7 @@ class CliTests(TempConfigMixin, unittest.TestCase):
     def test_models_lists_every_selected_id(self):
         code, stdout, _stderr = _run_cli(["--config", self._config(), "--format", "models"])
         self.assertEqual(code, 0)
-        self.assertEqual(stdout.splitlines(), ["TB322FC", "TB323FU"])
+        self.assertEqual(stdout.splitlines(), ["TB322FC", "TB323FU", "TB710FU"])
 
     def test_models_lists_a_synthetic_third_profile(self):
         config = self._synthetic_third_config()
@@ -492,6 +521,7 @@ class CliTests(TempConfigMixin, unittest.TestCase):
             [
                 "TB322FC\tconfigs/tb322fc_android_defconfig",
                 "TB323FU\tconfigs/tb323fu_unified_defconfig",
+                "TB710FU\tconfigs/tb710fu_android_defconfig",
             ],
         )
 
@@ -592,7 +622,11 @@ class CliTests(TempConfigMixin, unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             stdout.splitlines(),
-            ["Lenovo Legion Y700 Gen 4 (TB322FC)", "Lenovo Legion Y700 Gen 5 (TB323FU)"],
+            [
+                "Lenovo Legion Y700 Gen 4 (TB322FC)",
+                "Lenovo Legion Y700 Gen 5 (TB323FU)",
+                "Lenovo Xiaoxin Pad Pro GT (TB710FU)",
+            ],
         )
 
     def test_readme_includes_a_synthetic_third_profile(self):

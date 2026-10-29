@@ -96,6 +96,43 @@
           "novatek/novatek_ts_fw.bin": "a374ce0856f9e61bd62de955e93d2585963a0636ff7390de2248386e896c114f"
         }
       }
+    },
+    "TB710FU": {
+      "displayName": "Lenovo Xiaoxin Pad Pro GT",
+      "compatible": {
+        "soc": "SM8650",
+        "device": "tb710fu"
+      },
+      "dtb": "qcom/sm8650-lenovo-tb710fu.dtb",
+      "required": [
+        "lenovo,tb710fu",
+        "qcom,sm8650"
+      ],
+      "forbidden": [
+        "lenovo,elden",
+        "lenovo,tb322fc",
+        "lenovo,baldur",
+        "lenovo,tb323fu",
+        "qcom,sm8750",
+        "qcom,sm8850",
+        "qcom,kaanapali"
+      ],
+      "extraArgs": [
+        "clk_ignore_unused",
+        "pd_ignore_unused",
+        "regulator_ignore_unused"
+      ],
+      "runtimeConfig": "configs/tb710fu_android_defconfig",
+      "runtimeCmakeArgs": [
+        "-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"
+      ],
+      "bootPartitionBytes": 100663296,
+      "diagnosticMode": "rd-break",
+      "bootRequirements": {
+        "earlyFirmware": [],
+        "earlyDrivers": [],
+        "firmwareSha256": {}
+      }
     }
   }
 }
