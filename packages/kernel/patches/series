@@ -327,6 +327,7 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0716-drm-msm-a6xx-a750-without-ifpc.patch
 0720-input-touchscreen-add-nt36532-spi.patch
 0721-input-nt36532-scan-for-the-pen-by-default.patch
+0722-input-nt36532-parent-the-input-devices-to-the-SPI-device.patch
 0730-Bluetooth-btqca-dt-bd-address.patch
 0731-power-sequencing-qcom-wcn-reset-pulse.patch
 0732-wifi-ath12k-wcn7850-workarounds.patch

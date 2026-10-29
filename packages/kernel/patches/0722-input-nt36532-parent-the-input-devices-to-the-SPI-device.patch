@@ -1,0 +1,47 @@
+From: "lich.wang" <lich.wang@gmail.com>
+Date: Thu, 29 Oct 2026 19:40:00 +0800
+Subject: [PATCH] input: nt36532: parent the input devices to the SPI device
+
+The vendor driver allocates the touchscreen and pen input devices
+without a parent, so they appear under /sys/devices/virtual/input.
+User space then sees them as virtual devices: InputPlumber skips every
+device under /devices/virtual, and udev cannot give them an ID_PATH.
+Parent both to the SPI device, as input drivers normally do.
+
+Effects in user space: gamescope associates real (non-virtual) touch
+devices with the panel, so it now maps the TB710FU touchscreen to the
+internal display (orientation normal on this board). InputPlumber now
+considers both devices, but no InputPlumber profile matches the TB710FU,
+so nothing manages or grabs them; this is a prerequisite for one.
+libinput device groups, hwdb matches and the desktop touchscreen setup
+match on phys, modalias or name and do not change.
+
+Only the TB710FU binds this driver (novatek,nt36532-ts-spi).
+
+Tested on TB710FU (unified kernel 7.2.6, InputPlumber 0.81.0): both
+devices are under .../a90000.spi/spi_master/spi0/spi0.0/input/, udev
+sets ID_PATH=platform-a90000.spi-cs-0, the touchscreen and the pen
+register, /proc/support_pen stays 1, and InputPlumber lists them as
+source devices without creating a CompositeDevice. In Game Mode finger
+touch lands where it should (checked by hand after switching from the
+desktop and back), and the pen still works as a tablet on the desktop.
+---
+diff --git a/drivers/input/touchscreen/nt36532/nt36xxx.c b/drivers/input/touchscreen/nt36532/nt36xxx.c
+--- a/drivers/input/touchscreen/nt36532/nt36xxx.c
++++ b/drivers/input/touchscreen/nt36532/nt36xxx.c
+@@ -2928,6 +2928,7 @@
+ 		ret = -ENOMEM;
+ 		goto err_input_dev_alloc_failed;
+ 	}
++	ts->input_dev->dev.parent = &client->dev;
+ 
+ 	ts->max_touch_num = TOUCH_MAX_FINGER_NUM;
+ 
+@@ -3007,6 +3008,7 @@
+ 			ret = -ENOMEM;
+ 			goto err_pen_input_dev_alloc_failed;
+ 		}
++		ts->pen_input_dev->dev.parent = &client->dev;
+ 		nvt_pen_input_config();
+ 		//---register pen input device---
+ 		ret = input_register_device(ts->pen_input_dev);
