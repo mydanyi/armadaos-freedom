@@ -71,6 +71,8 @@ odin_touchscreen="$(device_env_value 'AYN Odin 2' ARMADA_PRIMARY_TOUCHSCREEN)"
 assert_eq "$(device_env_value 'AYN Odin 2' ARMADA_DEVICE_ID)" ayn-odin-2 'odin device id'
 assert_eq "$odin_calibration" '' 'odin calibration empty'
 assert_eq "$odin_touchscreen" '' 'odin touchscreen empty'
+assert_eq "$(device_env_value 'AYN Odin 2' ARMADA_GAMEMODE_PEN_TOUCH)" '' 'odin pen bridge off'
+assert_eq "$(device_env_value 'Lenovo Legion Tab Y700 5th Gen' ARMADA_GAMEMODE_PEN_TOUCH)" '' 'tb323fu pen bridge off'
 
 # --- device-env: Lenovo Legion Y700 Gen4 devicetree identification ----------
 # The Gen4 board is identified from a real devicetree directory: an exact
@@ -172,6 +174,7 @@ assert_eq "$(dt_value ARMADA_PRIMARY_TOUCHSCREEN)" "$TOUCHSCREEN" 'tb710fu touch
 assert_eq "$(dt_value ARMADA_BUILTIN_GAMEPAD)" 0 'tb710fu has no built-in gamepad'
 assert_eq "$(dt_value ARMADA_PANEL_ORIENTATION)" normal 'tb710fu orientation default'
 assert_eq "$(dt_value ARMADA_DESKTOP_TOUCHSCREEN_CALIBRATION)" '' 'tb710fu calibration empty'
+assert_eq "$(dt_value ARMADA_GAMEMODE_PEN_TOUCH)" NVTCapacitivePen 'tb710fu game mode pen bridge'
 write_dt_model 'Some Unrecognized Board'
 write_dt_compatible 'qcom,sm8650' 'lenovo,tb710fu'
 assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb710fu 'tb710fu second compatible device id'
