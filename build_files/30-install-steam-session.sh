@@ -1,6 +1,27 @@
 #!/bin/bash
 set -euxo pipefail
 
+# Download a large file, resuming after a dropped or stalled connection. Each
+# attempt is a separate curl run that continues the partial file (-C -): curl's
+# own --retry would restart from the offset the run began at. A transfer that
+# stays below 1 KiB/s for 60 s counts as stalled. The caller still checks the
+# file against its pinned hash.
+download_resumable() {
+    local out=$1 url=$2 attempt attempts=12
+    for attempt in $(seq 1 "${attempts}"); do
+        if curl --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+            -C - -fsSL -o "${out}" "${url}"; then
+            return 0
+        fi
+        echo "download of ${url} interrupted (attempt ${attempt}/${attempts})" >&2
+        if (( attempt < attempts )); then
+            sleep 10
+        fi
+    done
+    echo "ERROR: could not download ${url}" >&2
+    return 1
+}
+
 # Patched Turnip includes the Mesa #14656 VM_BIND fix.
 dnf5 -y install --setopt=install_weak_deps=False /packages/mesa/mesa-*.fc44.armada.*.rpm
 
@@ -88,7 +109,7 @@ dnf5 -y install --setopt=install_weak_deps=False /packages/fex/fex-emu-*.rpm
 mkdir -p /usr/share/fex-emu/RootFS
 ARCH_ROOTFS_URL="https://rootfs.fex-emu.gg/ArchLinux/2026-08-11/ArchLinux.sqsh"
 ARCH_ROOTFS_SHA256="5d0c1a38590c68e5c2597c2c8a26d2f80170b1b738c857d63e1cdadada5f5f2a"
-curl --retry 3 --retry-delay 2 -fsSL -o /usr/share/fex-emu/RootFS/ArchLinux.sqsh "${ARCH_ROOTFS_URL}"
+download_resumable /usr/share/fex-emu/RootFS/ArchLinux.sqsh "${ARCH_ROOTFS_URL}"
 echo "${ARCH_ROOTFS_SHA256}  /usr/share/fex-emu/RootFS/ArchLinux.sqsh" | sha256sum -c -
 # Steam's FEX compat tool needs the manifest the rootfs ships; a bump to a
 # rootfs without one would otherwise fail only at x86 game launch.
@@ -145,7 +166,7 @@ PROTON_TAR="${PROTON_ARCHIVE_NAME}.tar.xz"
 PROTON_URL="https://github.com/CachyOS/proton-cachyos/releases/download/cachyos-${PROTON_VER}/${PROTON_TAR}"
 PROTON_SHA512_URL="https://github.com/CachyOS/proton-cachyos/releases/download/cachyos-${PROTON_VER}/${PROTON_ARCHIVE_NAME}.sha512sum"
 
-curl --retry 12 --retry-delay 10 -fsSL -o "/tmp/${PROTON_TAR}" "${PROTON_URL}"
+download_resumable "/tmp/${PROTON_TAR}" "${PROTON_URL}"
 curl --retry 12 --retry-delay 10 -fsSL -o "/tmp/${PROTON_ARCHIVE_NAME}.sha512sum" "${PROTON_SHA512_URL}"
 cd /tmp
 sha512sum -c "${PROTON_ARCHIVE_NAME}.sha512sum"
