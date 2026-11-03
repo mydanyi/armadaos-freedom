@@ -1,0 +1,71 @@
+Subject: [PATCH] scsi: ufs: core: fix clock scaling command deadlock
+
+Backport the upstream lock ordering correction to the accepted 7.2.6
+hardware-rotation baseline. Acquire the clock-scaling writer lock, and
+write-booster mutex where needed, before quiescing shared command queues.
+Unquiesce queues before releasing those locks so device-management readers
+can complete their commands. Preserve success and failure cleanup.
+
+Upstream author: Joonhoe Kim
+Link: https://lkml.iu.edu/2610.2/01240.html
+Fixes: 08b12cda6c44 ("scsi: ufs: core: Switch to scsi_get_internal_cmd()")
+Fixes: dc5dcac53278 ("scsi: ufs: core: Add helpers to pause and resume command processing")
+---
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -1358,13 +1358,13 @@
+ 	int ret = 0;
+ 
+ 	mutex_lock(&hba->host->scan_mutex);
+-	blk_mq_quiesce_tagset(&hba->host->tag_set);
+ 	down_write(&hba->clk_scaling_lock);
++	blk_mq_quiesce_tagset(&hba->host->tag_set);
+ 
+ 	if (ufshcd_wait_for_pending_cmds(hba, timeout_us)) {
+ 		ret = -EBUSY;
+-		up_write(&hba->clk_scaling_lock);
+ 		blk_mq_unquiesce_tagset(&hba->host->tag_set);
++		up_write(&hba->clk_scaling_lock);
+ 		mutex_unlock(&hba->host->scan_mutex);
+ 	}
+ 
+@@ -1379,8 +1379,8 @@
+  */
+ void ufshcd_resume_command_processing(struct ufs_hba *hba)
+ {
+-	up_write(&hba->clk_scaling_lock);
+ 	blk_mq_unquiesce_tagset(&hba->host->tag_set);
++	up_write(&hba->clk_scaling_lock);
+ 	mutex_unlock(&hba->host->scan_mutex);
+ }
+ 
+@@ -1454,16 +1454,16 @@
+ 	 * clock scaling is in progress
+ 	 */
+ 	mutex_lock(&hba->host->scan_mutex);
+-	blk_mq_quiesce_tagset(&hba->host->tag_set);
+ 	mutex_lock(&hba->wb_mutex);
+ 	down_write(&hba->clk_scaling_lock);
++	blk_mq_quiesce_tagset(&hba->host->tag_set);
+ 
+ 	if (!hba->clk_scaling.is_allowed ||
+ 	    ufshcd_wait_for_pending_cmds(hba, timeout_us)) {
+ 		ret = -EBUSY;
++		blk_mq_unquiesce_tagset(&hba->host->tag_set);
+ 		up_write(&hba->clk_scaling_lock);
+ 		mutex_unlock(&hba->wb_mutex);
+-		blk_mq_unquiesce_tagset(&hba->host->tag_set);
+ 		mutex_unlock(&hba->host->scan_mutex);
+ 		goto out;
+ 	}
+@@ -1477,9 +1477,9 @@
+ 
+ static void ufshcd_clock_scaling_unprepare(struct ufs_hba *hba, int err)
+ {
++	blk_mq_unquiesce_tagset(&hba->host->tag_set);
+ 	up_write(&hba->clk_scaling_lock);
+ 	mutex_unlock(&hba->wb_mutex);
+-	blk_mq_unquiesce_tagset(&hba->host->tag_set);
+ 	mutex_unlock(&hba->host->scan_mutex);
+ 
+ 	/* Enable Write Booster if current gear requires it else disable it */
