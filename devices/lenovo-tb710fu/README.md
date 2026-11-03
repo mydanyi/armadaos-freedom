@@ -72,27 +72,18 @@ bash packages/kernel/scripts/build-kernel.sh
 | `qcom/gen70900_sqe.fw`、`qcom/gmu_gen70900.bin` | linux-firmware 或本机 `/vendor/firmware` |
 | `novatek/novatek_nt36532_fw.bin` | 本机 `/vendor/firmware/novatek_ts_fw.bin` |
 | `aw882xx_acf.bin` | 功放配置，来自 tb710fu-linux 的 board-root |
-| `qcom/sm8650/Lenovo-TB710FU-tplg.bin` | tb710fu-linux 的 AudioReach 拓扑，其中唯一的 I2S 输出模块（`0x0700100A`）需改为 TDM 输出模块（`0x0700100E`） |
+| `qcom/sm8650/Lenovo-TB710FU-tplg.bin` | 镜像自带，由 [`audio_topology/sm8650/Lenovo-TB710FU.m4`](../../audio_topology/sm8650/Lenovo-TB710FU.m4) 生成；扬声器端点为 TDM 输出模块（`0x0700100E`） |
 | `ath12k/WCN7850/hw2.0/{amss,board-2,m3}.bin` | 镜像自带；`board-2.bin` 末尾追加了本机一项（`subsystem-device=3378`），数据原样取自 Fedora `atheros-firmware-20261019`（即 linux-firmware），许可为同目录的 [`LICENSE.QualcommAtheros_ath10k`](../../system_files/usr/lib/firmware/ath12k/WCN7850/hw2.0/LICENSE.QualcommAtheros_ath10k)（linux-firmware `WHENCE` 中 `ath12k/WCN7850/hw2.0/board-2.bin` 对应的许可） |
 | `qca/hmtbtfw20.tlv` 等 | linux-firmware（蓝牙） |
 
-提取与修改拓扑的脚本见 [lich-wang/tb710fu-hyperos-steamos](https://github.com/lich-wang/tb710fu-hyperos-steamos)（`tools/collect_firmware.sh`、`tools/patch_tplg.py`）。
+从本机提取固件的脚本见 [lich-wang/tb710fu-hyperos-steamos](https://github.com/lich-wang/tb710fu-hyperos-steamos)（`tools/collect_firmware.sh`）。
 
 ## 用户空间所需设置
 
 - **WiFi：** 不需要额外设置。驱动按 PCI 子系统 ID 和芯片上报的 board-id（0xff）算出 `bus=pci,vendor=17cb,device=1107,subsystem-vendor=17cb,subsystem-device=3378,qmi-chip-id=2,qmi-board-id=255`，镜像的 `board-2.bin` 里有这一项。
-- **扬声器路由与功放：** 声卡没有 UCM 配置，使用 pro-audio。开机后执行：
-
-  ```sh
-  amixer -c 0 cset name='SECONDARY_TDM_RX_0 Audio Mixer MultiMedia1' 1
-  for i in 0 1 2 3; do amixer -c 0 cset name="aw_dev_${i}_switch" 1; amixer -c 0 cset name="aw_dev_${i}_monitor" 0; done
-  amixer -c 0 cset name=aw_dev_0_volume 10; amixer -c 0 cset name=aw_dev_1_volume 10
-  amixer -c 0 cset name=aw_dev_2_volume 0;  amixer -c 0 cset name=aw_dev_3_volume 0
-  ```
-
-  功放音量与 Android 下相同（0x34/0x35 衰减 21 档，0x36/0x37 衰减 11 档）。
+- **扬声器：** 不需要额外设置。UCM（`/usr/share/alsa/ucm2/Lenovo/TB710FU/`）打开 `SECONDARY_TDM_RX_0 Audio Mixer MultiMedia1` 和 4 颗功放，功放音量与 Android 下相同（0x34/0x35 衰减 21 档，0x36/0x37 衰减 11 档）。PipeWire 的输出为 `alsa_output.platform-sound.HiFi__Speaker__sink`。
 - **手写笔：** 补丁 0721 让驱动开机即打开笔扫描，并给坐标设好分辨率，桌面（KWin/libinput）可以直接使用；`/proc/support_pen` 仍可手动开关。游戏模式下 gamescope 不处理手写笔（tablet-tool）事件，需要另外把笔转成触摸。
-- **PipeWire：** 输出 `alsa_output.platform-sound.pro-output-0`，`audio.format = "S16LE"`、48 kHz、2 声道。建议关闭空闲挂起：每次恢复都会重新启动 4 颗功放，偶尔会锁不上 TDM 时钟。
+- **PipeWire：** WirePlumber 规则 `53-lenovo-tb710fu-speakers.conf`（只匹配声卡名 `Lenovo-TB710FU`）把输出固定为 `S16LE`，并关闭空闲挂起：24 位输入会让 ADSP 的音频处理出错；每次从挂起恢复都会重新启动 4 颗功放，偶尔会锁不上 TDM 时钟。
 
 ## 源码与来源
 
