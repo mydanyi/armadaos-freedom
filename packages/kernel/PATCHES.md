@@ -338,6 +338,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0536-scsi-ufs-core-dynamically-disable-timestamp-on-unsupported-devices.patch`
   source: https://git.kernel.org/pub/scm/linux/kernel/git/mkp/scsi.git/commit/?id=00eec343c7306be7f1103f5002abd77496937ff9
   upstream: https://git.kernel.org/pub/scm/linux/kernel/git/mkp/scsi.git/commit/?id=00eec343c7306be7f1103f5002abd77496937ff9
+- `patches/0537-scsi-ufs-core-fix-clock-scaling-command-deadlock.patch`
+  source: https://lkml.iu.edu/2610.2/01240.html
+  upstream: https://lkml.iu.edu/2610.2/01240.html
+  notes: Backport Joonhoe Kim's UFS clock-scaling/device-command deadlock fix to 7.2.6, with context refreshed. Acquire the clock-scaling lock (and write-booster mutex where needed) before quiescing the shared tagset; unquiesce before releasing the locks, including error cleanup.
 - `patches/0512-PCI-qcom-skip-L23-ready-poll-on-SM8550.patch`
   source: armada
   upstream: local
