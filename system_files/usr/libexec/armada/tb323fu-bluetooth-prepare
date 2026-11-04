@@ -1,0 +1,201 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright 2026 danyi
+#
+# Prepare TB323FU BRAHMA Bluetooth firmware on fresh images.
+# Reads the tablet's preserved original FAT Bluetooth partition read-only and
+# copies only the two BRAHMA firmware files the board DT requests into the
+# firmware_class search path. Never redistributes proprietary blobs.
+
+set -eu
+set -o pipefail
+
+DT_COMPATIBLE="${TB323FU_DT_COMPATIBLE:-/proc/device-tree/compatible}"
+BT_PARTLABEL_DIR="${TB323FU_BT_PARTLABEL_DIR:-/dev/disk/by-partlabel}"
+FIRMWARE_CLASS_PATH_PARAM="${TB323FU_FIRMWARE_CLASS_PATH:-/sys/module/firmware_class/parameters/path}"
+RUN_FIRMWARE="${TB323FU_RUN_FIRMWARE:-/run/armada-firmware}"
+BT_WORK_DIR="${TB323FU_BT_WORK_DIR:-/run/tb323fu-bluetooth-prepare}"
+
+FW_FILE_A="brhbtfw20.mbn"
+FW_FILE_B="brhbtnv20.bin"
+FW_SUBDIR="qca"
+
+log() { printf 'tb323fu-bluetooth-prepare: %s\n' "$*" >&2; }
+
+# Only run on the exact target board.
+if ! tr '\0' '\n' < "${DT_COMPATIBLE}" 2>/dev/null | grep -qx 'lenovo,baldur'; then
+    exit 0
+fi
+
+# Resolve firmware root directly into parent variables (no subshell).
+FW_ROOT=""
+FW_ROUTE=""
+if [ -r "${FIRMWARE_CLASS_PATH_PARAM}" ]; then
+    if FW_ROOT_RAW="$(cat "${FIRMWARE_CLASS_PATH_PARAM}" 2>/dev/null)"; then
+        FW_ROOT_RAW="${FW_ROOT_RAW%$'\n'}"
+        if [ -n "${FW_ROOT_RAW}" ]; then
+            case "${FW_ROOT_RAW}" in
+                /*) FW_ROOT="${FW_ROOT_RAW}"; FW_ROUTE="param" ;;
+                *)  log "rejecting relative firmware_class path: ${FW_ROOT_RAW}"; exit 1 ;;
+            esac
+        fi
+    fi
+fi
+if [ -z "${FW_ROUTE}" ]; then
+    case "${RUN_FIRMWARE}" in
+        /*) FW_ROOT="${RUN_FIRMWARE}"; FW_ROUTE="fallback" ;;
+        *)  log "fallback firmware root must be absolute: ${RUN_FIRMWARE}"; exit 1 ;;
+    esac
+fi
+if [ "${FW_ROUTE}" = "param" ]; then
+    log "reusing firmware_class path ${FW_ROOT}"
+fi
+
+workdir="$(mktemp -d "${BT_WORK_DIR}.XXXXXX")" || {
+    log "cannot create work directory under ${BT_WORK_DIR}"
+    exit 1
+}
+
+mounted=""
+mnt="${workdir}/mnt"
+stagedir="${workdir}/stage"
+mkdir -p "${stagedir}"
+
+cleanup() {
+    local rc=$?
+    if [ -n "${mounted}" ]; then
+        if ! umount "${mounted}"; then
+            log "umount failed for ${mounted}; preserving workdir"
+            rc=1
+            mounted="keep"
+        else
+            mounted=""
+        fi
+    fi
+    if [ -z "${mounted}" ] && [ -n "${workdir}" ] && [ -d "${workdir}" ]; then
+        rm -rf "${workdir}"
+    fi
+    exit "${rc}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+# Stage candidate from one source node. Return codes:
+#   0 = staged and unmounted successfully
+#   10 = unavailable/incomplete candidate (cleanly unmounted), try next
+#   1 = fatal (copy/umount failure); workdir preserved if mount still active
+stage_from_partition() {
+    local src_node="$1"
+    if [ ! -r "${src_node}" ]; then
+        return 10
+    fi
+    if ! mkdir -p "${mnt}"; then
+        log "cannot create mountpoint ${mnt}"
+        return 1
+    fi
+    if ! mount -t vfat -o ro,nosuid,nodev,noexec "${src_node}" "${mnt}"; then
+        log "mount failed for ${src_node}"
+        rmdir "${mnt}" 2>/dev/null || true
+        return 10
+    fi
+    mounted="${mnt}"
+
+    local a_src="${mnt}/image/${FW_FILE_A}"
+    local b_src="${mnt}/image/${FW_FILE_B}"
+    if [ ! -s "${a_src}" ] || [ ! -s "${b_src}" ]; then
+        log "partition ${src_node} missing/incomplete firmware"
+        if ! umount "${mnt}"; then
+            log "umount failed for ${mnt}; preserving workdir"
+            return 1
+        fi
+        mounted=""
+        rmdir "${mnt}" 2>/dev/null || true
+        return 10
+    fi
+
+    rm -rf "${stagedir}"
+    if ! mkdir -p "${stagedir}"; then
+        log "cannot create ${stagedir}"
+        return 1
+    fi
+    if ! cp -f "${a_src}" "${stagedir}/${FW_FILE_A}"; then
+        log "copy failed for ${FW_FILE_A}"
+        return 1
+    fi
+    if ! cp -f "${b_src}" "${stagedir}/${FW_FILE_B}"; then
+        log "copy failed for ${FW_FILE_B}"
+        return 1
+    fi
+    if [ ! -s "${stagedir}/${FW_FILE_A}" ] || [ ! -s "${stagedir}/${FW_FILE_B}" ]; then
+        log "staged files are empty"
+        return 1
+    fi
+
+    if ! umount "${mnt}"; then
+        log "umount failed for ${mnt}; preserving workdir"
+        return 1
+    fi
+    mounted=""
+    rmdir "${mnt}" 2>/dev/null || true
+    return 0
+}
+
+any_node_present=0
+for label in bluetooth_a bluetooth_b; do
+    if [ -e "${BT_PARTLABEL_DIR}/${label}" ]; then
+        any_node_present=1
+        break
+    fi
+done
+if [ "${any_node_present}" -eq 0 ] && command -v udevadm >/dev/null 2>&1; then
+    udevadm settle --timeout=10 >/dev/null 2>&1 || true
+fi
+
+found=0
+for label in bluetooth_a bluetooth_b; do
+    node="${BT_PARTLABEL_DIR}/${label}"
+    if [ ! -e "${node}" ]; then
+        continue
+    fi
+    rc=0
+    stage_from_partition "${node}" || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        found=1
+        break
+    fi
+    if [ "${rc}" -ne 10 ]; then
+        log "aborting after fatal error on ${node}"
+        exit 1
+    fi
+done
+
+if [ "${found}" -ne 1 ]; then
+    log "no complete source partition found"
+    exit 1
+fi
+
+install -d -m 0755 "${FW_ROOT}/${FW_SUBDIR}" || {
+    log "cannot create ${FW_ROOT}/${FW_SUBDIR}"
+    exit 1
+}
+
+if ! install -m 0644 "${stagedir}/${FW_FILE_A}" "${FW_ROOT}/${FW_SUBDIR}/${FW_FILE_A}"; then
+    log "install failed for ${FW_FILE_A}"
+    exit 1
+fi
+if ! install -m 0644 "${stagedir}/${FW_FILE_B}" "${FW_ROOT}/${FW_SUBDIR}/${FW_FILE_B}"; then
+    log "install failed for ${FW_FILE_B}"
+    exit 1
+fi
+log "installed ${FW_SUBDIR}/${FW_FILE_A} and ${FW_SUBDIR}/${FW_FILE_B} under ${FW_ROOT}"
+
+if [ "${FW_ROUTE}" = "fallback" ]; then
+    if ! printf '%s' "${FW_ROOT}" > "${FIRMWARE_CLASS_PATH_PARAM}"; then
+        log "failed to write firmware_class path ${FIRMWARE_CLASS_PATH_PARAM}"
+        exit 1
+    fi
+fi
+
+exit 0

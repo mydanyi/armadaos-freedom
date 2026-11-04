@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright 2026 danyi
+[Unit]
+Description=Prepare TB323FU BRAHMA Bluetooth firmware on fresh images
+After=local-fs.target systemd-udev-trigger.service
+Requires=tb323fu-btaddr.service
+Before=tb323fu-btaddr.service bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/armada/tb323fu-bluetooth-prepare
+
+[Install]
+WantedBy=bluetooth.target
+RequiredBy=bluetooth.service
