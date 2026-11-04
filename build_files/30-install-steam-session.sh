@@ -4,20 +4,39 @@ set -euxo pipefail
 # Download a large file, resuming after a dropped or stalled connection. Each
 # attempt is a separate curl run that continues the partial file (-C -): curl's
 # own --retry would restart from the offset the run began at. A transfer that
-# stays below 1 KiB/s for 60 s counts as stalled. The caller still checks the
-# file against its pinned hash.
+# stays below 1 KiB/s for 60 s counts as stalled. Between attempts we wait
+# 10 s, or what the last response's Retry-After asks for (as curl --retry
+# would), capped at 10 minutes. The caller still checks the file against its
+# pinned hash.
 download_resumable() {
-    local out=$1 url=$2 attempt attempts=12
+    local out=$1 url=$2 attempt attempts=12 headers delay retry_after
+    headers=$(mktemp)
     for attempt in $(seq 1 "${attempts}"); do
         if curl --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
-            -C - -fsSL -o "${out}" "${url}"; then
+            -D "${headers}" -C - -fsSL -o "${out}" "${url}"; then
+            rm -f "${headers}"
             return 0
         fi
         echo "download of ${url} interrupted (attempt ${attempt}/${attempts})" >&2
         if (( attempt < attempts )); then
-            sleep 10
+            # Retry-After of the final response (-L dumps every hop): delay
+            # seconds or an HTTP date.
+            retry_after=$(tr -d '\r' < "${headers}" | awk '
+                /^HTTP\// { v = "" }
+                tolower($1) == "retry-after:" { $1 = ""; sub(/^ +/, ""); v = $0 }
+                END { print v }')
+            delay=10
+            if [[ "${retry_after}" =~ ^[0-9]+$ ]]; then
+                delay=$((10#${retry_after}))
+            elif [[ -n "${retry_after}" ]] && date -d "${retry_after}" +%s >/dev/null 2>&1; then
+                delay=$(( $(date -d "${retry_after}" +%s) - $(date +%s) ))
+            fi
+            (( delay < 10 )) && delay=10
+            (( delay > 600 )) && delay=600
+            sleep "${delay}"
         fi
     done
+    rm -f "${headers}"
     echo "ERROR: could not download ${url}" >&2
     return 1
 }
