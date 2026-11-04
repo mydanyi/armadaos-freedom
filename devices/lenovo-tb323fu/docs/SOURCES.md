@@ -14,6 +14,10 @@
 
 板级来源的许可证和 `kernel/PROVENANCE.md` 保留在原源码目录。`kernel/runtime-fixes/` 的补丁与固定快照分别维护；165 Hz 补丁替换原 `0109`，不是在它之后重复追加。
 
+## 蓝牙固件
+
+Baldur 设备树请求 BRAHMA 系列的 `brhbtfw20.mbn` 和 `brhbtnv20.bin`，不能用 GNG 系列固件替代。`tb323fu-bluetooth-prepare` 在蓝牙启动前，只读挂载同一设备保留的原厂 `bluetooth_a` 分区（不可用或文件不完整时尝试 `bluetooth_b`），先读取 `image/` 下的这两个文件到临时目录，卸载源分区后再放入固件搜索路径的 `qca/` 目录。加载程序仅在 `lenovo,baldur` 上执行；这两份固件来自设备自身，不随仓库分发，因此需要保留原厂蓝牙固件分区。
+
 ## kShimC 和打包器
 
 引导基于 [sunflower2333/kShimC feature/2610](https://github.com/sunflower2333/kShimC/tree/feature/2610)，打包器基于 [Project-Aloha/DualBootKernelPatcher feature/2610](https://github.com/Project-Aloha/DualBootKernelPatcher/tree/feature/2610)。
