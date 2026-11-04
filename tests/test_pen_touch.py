@@ -249,12 +249,21 @@ def pack(events):
 
 
 class ForwardTest(unittest.TestCase):
-    def test_resync_happens_before_later_events_in_the_batch(self):
+    def setUp(self):
+        self.drained = []
+        original = mod.drain
+        mod.drain = self.drained.append
+        self.addCleanup(setattr, mod, "drain", original)
+
+    def stub_state(self, state):
+        original = mod.device_state
+        mod.device_state = lambda _fd: state
+        self.addCleanup(setattr, mod, "device_state", original)
+
+    def test_resync_discards_the_rest_of_the_batch(self):
         translator = mod.PenTouchTranslator()
         touch = FakeTouch()
-        original = mod.device_state
-        mod.device_state = lambda _fd: (True, 40, 50)
-        self.addCleanup(setattr, mod, "device_state", original)
+        self.stub_state((True, 40, 50))
         data = pack(
             [
                 (SYN, mod.SYN_DROPPED, 0),
@@ -263,12 +272,67 @@ class ForwardTest(unittest.TestCase):
                 report(),
             ]
         )
-        mod.forward(data, translator, touch, fd=None)
-        self.assertEqual(len(touch.frames), 2)
+        mod.forward(data, translator, touch, fd="fd")
+        self.assertEqual(self.drained, ["fd"])
+        self.assertEqual(len(touch.frames), 1)
         self.assertEqual(values(touch.frames[0], ABS, mod.ABS_MT_TRACKING_ID), [1])
         self.assertEqual(values(touch.frames[0], ABS, mod.ABS_MT_POSITION_X), [40])
-        self.assertEqual(values(touch.frames[1], ABS, mod.ABS_MT_POSITION_X), [41])
-        self.assertEqual(values(touch.frames[1], ABS, mod.ABS_MT_POSITION_Y), [50])
+        self.assertFalse(translator.needs_resync)
+
+    def test_stale_down_after_the_drop_is_not_replayed(self):
+        # The snapshot already saw the lift; the old down left in the batch
+        # must not press the virtual touch again.
+        translator = mod.PenTouchTranslator()
+        touch = FakeTouch()
+        self.stub_state((False, 40, 50))
+        data = pack(
+            [
+                (SYN, mod.SYN_DROPPED, 0),
+                report(),
+                (KEY, mod.BTN_TOUCH, 1),
+                (ABS, mod.ABS_X, 41),
+                report(),
+            ]
+        )
+        mod.forward(data, translator, touch, fd="fd")
+        self.assertEqual(touch.frames, [])
+        self.assertFalse(translator.sent_down)
+
+    def test_batch_without_a_drop_is_forwarded_in_full(self):
+        translator = mod.PenTouchTranslator()
+        touch = FakeTouch()
+        data = pack([(KEY, mod.BTN_TOUCH, 1), report(), (ABS, mod.ABS_X, 7), report()])
+        mod.forward(data, translator, touch, fd="fd")
+        self.assertEqual(self.drained, [])
+        self.assertEqual(len(touch.frames), 2)
+        self.assertEqual(values(touch.frames[1], ABS, mod.ABS_MT_POSITION_X), [7])
+
+
+class BridgeNameCheckTest(unittest.TestCase):
+    def test_reused_node_of_another_device_is_not_grabbed(self):
+        opened, closed, ioctls = [], [], []
+        patches = {
+            "os": type("FakeOs", (), {
+                "open": staticmethod(lambda path, _flags: opened.append(path) or 7),
+                "close": staticmethod(closed.append),
+                "O_RDONLY": 0, "O_NONBLOCK": 0, "O_CLOEXEC": 0,
+            }),
+            "device_name": lambda _fd: "Some Gamepad",
+            "fcntl": type("FakeFcntl", (), {
+                "ioctl": staticmethod(lambda *a: ioctls.append(a)),
+            }),
+            "UinputTouch": lambda *_a: self.fail("virtual device created"),
+        }
+        for name, value in patches.items():
+            self.addCleanup(setattr, mod, name, getattr(mod, name))
+            setattr(mod, name, value)
+        with self.assertRaises(OSError) as ctx:
+            mod.bridge("/dev/input/event5", "NVTCapacitivePen")
+        self.assertEqual(ctx.exception.errno, mod.errno.ENODEV)
+        self.assertIn(ctx.exception.errno, mod.TRANSIENT_ERRNOS)
+        self.assertEqual(opened, ["/dev/input/event5"])
+        self.assertEqual(closed, [7])
+        self.assertEqual(ioctls, [])
 
 
 class RunLoopTest(unittest.TestCase):
@@ -287,7 +351,8 @@ class RunLoopTest(unittest.TestCase):
             mod.Stop(),
         ]
 
-        def bridge(path):
+        def bridge(path, pen):
+            self.assertEqual(pen, "Pen")
             calls.append(path)
             raise outcomes.pop(0)
 
@@ -314,7 +379,7 @@ class RunLoopTest(unittest.TestCase):
         self.assertEqual(sum("waiting for" in m for m in self.logs), 1)
 
     def test_other_errors_are_not_swallowed(self):
-        def bridge(_path):
+        def bridge(_path, _pen):
             raise OSError(mod.errno.EINVAL, "Invalid argument")
 
         with self.assertRaises(OSError):
@@ -352,6 +417,7 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(mod.EVIOCGRAB, 0x40044590)
         self.assertEqual(mod.eviocgabs(mod.ABS_X), 0x80184540)
         self.assertEqual(mod.EVIOCGKEY, 0x80604518)
+        self.assertEqual(mod.EVIOCGNAME, 0x81004506)
         self.assertEqual(mod.UI_DEV_CREATE, 0x5501)
         self.assertEqual(mod.UI_DEV_DESTROY, 0x5502)
         self.assertEqual(mod.UI_DEV_SETUP, 0x405C5503)

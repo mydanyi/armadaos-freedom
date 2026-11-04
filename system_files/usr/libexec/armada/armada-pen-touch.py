@@ -19,9 +19,11 @@ Scope (deliberately narrow):
 * Tip down/up and position are forwarded. Hover, pressure, tilt and the barrel
   buttons are dropped.
 * The pen is grabbed (EVIOCGRAB) while the bridge runs, so nothing sees both
-  the tablet and the touch. The grab is attempted while the tip is up; events
-  queued before the grab are discarded and the touch state is then read back
-  from the device.
+  the tablet and the touch. The opened node's name is checked first, so a
+  reused eventN of another device is never grabbed. The grab is attempted
+  while the tip is up; events queued before the grab are discarded and the
+  touch state is then read back from the device. A SYN_DROPPED is recovered
+  the same way.
 * When the pen node goes away (driver reload) or cannot be opened or grabbed
   yet, the bridge lifts any held touch, removes the virtual device and waits
   for the pen to come back.
@@ -74,6 +76,8 @@ def _ioc(direction, nr, size):
 _IOC_WRITE, _IOC_READ = 1, 2
 EVIOCGRAB = _ioc(_IOC_WRITE, 0x90, 4)
 EVIOCGKEY = _ioc(_IOC_READ, 0x18, (KEY_MAX + 7) // 8)
+NAME_LEN = 256
+EVIOCGNAME = _ioc(_IOC_READ, 0x06, NAME_LEN)
 
 
 def eviocgabs(code):
@@ -253,6 +257,12 @@ def key_is_down(fd, code):
     return bool(buf[code // 8] & (1 << (code % 8)))
 
 
+def device_name(fd):
+    buf = bytearray(NAME_LEN)
+    length = fcntl.ioctl(fd, EVIOCGNAME, buf)
+    return bytes(buf[:length]).split(b"\0", 1)[0].decode(errors="replace")
+
+
 def encode_frame(frame):
     events = [EVENT.pack(0, 0, t, c, v) for t, c, v in frame]
     events.append(EVENT.pack(0, 0, EV_SYN, SYN_REPORT, 0))
@@ -341,21 +351,31 @@ def device_state(fd):
 
 
 def forward(data, translator, touch, fd):
-    """Feed one read batch, resyncing as soon as a drop has ended."""
+    """Feed one read batch, resyncing as soon as a drop has ended.
+
+    The state read for a resync is newer than the rest of the batch and than
+    what is still queued (EVIOCGKEY also flushes the queued key events), so
+    both are discarded first instead of being replayed on top of it.
+    """
     for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
         _sec, _usec, ev_type, code, value = EVENT.unpack_from(data, offset)
         touch.send(translator.feed(ev_type, code, value))
         if translator.needs_resync:
+            drain(fd)
             touch.send(translator.resync(*device_state(fd)))
+            return
 
 
-def bridge(path):
+def bridge(path, pen):
     """Forward one pen node until it goes away. Raises Stop on shutdown."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     touch = None
     grabbed = False
     translator = PenTouchTranslator()
     try:
+        # The node may have been reused by another device since the lookup.
+        if device_name(fd) != pen:
+            raise OSError(errno.ENODEV, "no longer the pen device")
         xinfo = read_absinfo(fd, ABS_X)
         yinfo = read_absinfo(fd, ABS_Y)
         try:
@@ -410,7 +430,7 @@ def run(pen, bridge_fn=None, find=None, sleep=time.sleep):
                     log(f"waiting for input device {pen!r}")
             else:
                 try:
-                    bridge_fn(path)
+                    bridge_fn(path, pen)
                     problem = "eof"
                     log(f"{path}: end of stream")
                 except OSError as exc:
