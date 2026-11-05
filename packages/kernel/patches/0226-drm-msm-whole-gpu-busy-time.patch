@@ -49,7 +49,7 @@
 +	busy_ns = df->monitor_busy_ns;
 +	mutex_unlock(&df->lock);
 +	if (active > 0)
-+		pm_runtime_put_autosuspend(dev);
++		__pm_runtime_put_autosuspend(dev);
 +
 +	return sysfs_emit(buf, "%llu\n", busy_ns);
 +}
