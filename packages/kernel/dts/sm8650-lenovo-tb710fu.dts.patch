@@ -20,6 +20,8 @@ registers the pen.
 
 Audio: four AW882xx amplifiers on i2c_hub_4, fed by SECONDARY_TDM_RX_0
 (slots 0-3 of an 8 x 32-bit frame), and the lenovo,tb710fu-sndcard card.
+The amplifiers name their parameter file with firmware-name, so it does not
+collide with another board's bare aw882xx_acf.bin.
 
 --- a/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu.dts
@@ -33,7 +35,7 @@ Audio: four AW882xx amplifiers on i2c_hub_4, fed by SECONDARY_TDM_RX_0
  #include "sm8650.dtsi"
  #include "pm8550.dtsi"
  #include "pm8550b.dtsi"
-@@ -1259,4 +1262,188 @@
+@@ -1259,4 +1262,192 @@
  
  &xo_board {
  	clock-frequency = <76800000>;
@@ -95,15 +97,15 @@ Audio: four AW882xx amplifiers on i2c_hub_4, fed by SECONDARY_TDM_RX_0
 +	};
 +};
 +
-+/* the unit's own split images from /vendor/firmware_mnt/image */
++/* the unit's own images (devices/lenovo-tb710fu/firmware), joined from its split /vendor/firmware_mnt/image files */
 +&remoteproc_adsp {
-+	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mdt",
-+			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mdt";
++	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mbn",
++			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mbn";
 +};
 +
 +&remoteproc_cdsp {
-+	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mdt",
-+			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mdt";
++	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mbn",
++			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mbn";
 +};
 +
 +/* GPU top level as in the vendor DTB: 903 MHz at TURBO, same ACD value as 834 MHz */
@@ -175,24 +177,28 @@ Audio: four AW882xx amplifiers on i2c_hub_4, fed by SECONDARY_TDM_RX_0
 +		compatible = "awinic,aw882xx_smartpa"; reg = <0x34>; #sound-dai-cells = <0>;
 +		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
 +		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <0>;
++		firmware-name = "qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin";
 +		reset-gpios = <&tlmm 9 GPIO_ACTIVE_HIGH>;
 +	};
 +	spk_amp1: aw882xx@35 {
 +		compatible = "awinic,aw882xx_smartpa"; reg = <0x35>; #sound-dai-cells = <0>;
 +		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
 +		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <1>;
++		firmware-name = "qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin";
 +		reset-gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
 +	};
 +	spk_amp2: aw882xx@36 {
 +		compatible = "awinic,aw882xx_smartpa"; reg = <0x36>; #sound-dai-cells = <0>;
 +		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
 +		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <2>;
++		firmware-name = "qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin";
 +		reset-gpios = <&tlmm 2 GPIO_ACTIVE_HIGH>;
 +	};
 +	spk_amp3: aw882xx@37 {
 +		compatible = "awinic,aw882xx_smartpa"; reg = <0x37>; #sound-dai-cells = <0>;
 +		rename-flag = <1>; monitor-mode = "hal_monitor"; aw-cali-mode = "none";
 +		aw-re-max = <30000>; aw-re-min = <4000>; sync-load = <1>; sound-channel = <3>;
++		firmware-name = "qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin";
 +		reset-gpios = <&tlmm 60 GPIO_ACTIVE_HIGH>;
 +	};
 +};

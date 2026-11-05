@@ -127,6 +127,10 @@ COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-speaker-gain /tb3
 COPY devices/lenovo-tb323fu/rootfs/usr/lib/systemd/user/tb323fu-speaker-gain.service /tb323fu-audio/tb323fu-speaker-gain.service
 COPY devices/lenovo-tb323fu/rootfs/usr/share/tb323fu/pipewire/tb323fu-speakers-protection.json /tb323fu-audio/tb323fu-speakers-protection.json
 COPY devices/lenovo-tb323fu/rootfs/usr/share/wireplumber/wireplumber.conf.d/61-tb323fu-speakers-dsp.conf /tb323fu-audio/61-tb323fu-speakers-dsp.conf
+# TB710FU: the unit's own DSP, GPU zap, touch and amplifier firmware, verified
+# at build time against devices/lenovo-tb710fu/firmware/SHA256SUMS and
+# installed at the paths its device tree names.
+COPY devices/lenovo-tb710fu/firmware/ /tb710fu-firmware/
 # Selected SM8850 companions come from Freedom Control; shared defaults and
 # performance helpers remain owned by this repository.
 COPY decky/freedom-control/system_files/usr/libexec/armada/armada-powerd /system_files/usr/libexec/armada/armada-powerd

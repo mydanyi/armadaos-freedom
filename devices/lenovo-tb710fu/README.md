@@ -37,7 +37,7 @@ ArmadaOS Freedom 统一内核与 kShimC 启动菜单对小新 Pad Pro GT 的适�
 - **音频：** 只验证了扬声器。耳机、麦克风未测试。前端必须使用 S16：24 位输入会让 ADSP 的音频处理出错。
 - **WiFi／显示的板级变通：** 部分补丁来自原移植项目的调试过程（ath12k 的 CE 轮询、DSI 控制器寄存器、PHY 时序等），按 `lenovo,tb710fu` 隔离，只在本机生效。是否都必要尚未逐项验证，后续可以继续精简。
 - **视频编解码（iris）、相机、外接显示（DP）：** 未启用。
-- **固件：** 设备专用固件需要从本机分区提取，本仓库不提供，见下文。
+- **固件：** 设备专用固件随镜像提供（[`firmware/`](firmware/README.md)），见下文。
 
 ## 内核与启动
 
@@ -62,21 +62,17 @@ bash packages/kernel/scripts/build-kernel.sh
 
 ## 固件
 
-以下文件需要从本机的 Android 分区或 linux-firmware 中取得，放到根文件系统的 `/usr/lib/firmware/`：
+镜像已自带本机需要的全部固件，不需要从平板上提取：
 
 | 路径 | 来源 |
 |---|---|
-| `qcom/sm8650/xiaoxin/gt/adsp.mdt`、`adsp.bNN`、`adsp_dtb.mdt`… | 本机 `/vendor/firmware_mnt/image`（ADSP） |
-| `qcom/sm8650/xiaoxin/gt/cdsp*.mdt`… | 同上（CDSP） |
-| `qcom/sm8650/xiaoxin/gt/gen70900_zap.mbn` | 本机 `/vendor/firmware`（GPU zap） |
-| `qcom/gen70900_sqe.fw`、`qcom/gmu_gen70900.bin` | linux-firmware 或本机 `/vendor/firmware` |
-| `novatek/novatek_nt36532_fw.bin` | 本机 `/vendor/firmware/novatek_ts_fw.bin` |
-| `aw882xx_acf.bin` | 功放配置，来自 tb710fu-linux 的 board-root |
+| `qcom/sm8650/xiaoxin/gt/adsp.mbn`、`adsp_dtb.mbn`、`cdsp.mbn`、`cdsp_dtb.mbn`、`gen70900_zap.mbn`、`aw882xx_acf.bin`，`novatek/novatek_nt36532_fw.bin`、`novatek_nt36532_mp.bin` | 本机原厂固件，见 [`firmware/`](firmware/README.md)（构建时按 `SHA256SUMS` 校验） |
+| `qcom/gen70900_sqe.fw`、`qcom/gen70900_aqe.fw`、`qcom/gmu_gen70900.bin` | linux-firmware（镜像自带） |
 | `qcom/sm8650/Lenovo-TB710FU-tplg.bin` | 镜像自带，由 [`audio_topology/sm8650/Lenovo-TB710FU.m4`](../../audio_topology/sm8650/Lenovo-TB710FU.m4) 生成；扬声器端点为 TDM 输出模块（`0x0700100E`） |
 | `ath12k/WCN7850/hw2.0/{amss,board-2,m3}.bin` | 镜像自带；`board-2.bin` 末尾追加了本机一项（`subsystem-device=3378`），数据原样取自 Fedora `atheros-firmware-20261019`（即 linux-firmware），许可为同目录的 [`LICENSE.QualcommAtheros_ath10k`](../../system_files/usr/lib/firmware/ath12k/WCN7850/hw2.0/LICENSE.QualcommAtheros_ath10k)（linux-firmware `WHENCE` 中 `ath12k/WCN7850/hw2.0/board-2.bin` 对应的许可） |
 | `qca/hmtbtfw20.tlv` 等 | linux-firmware（蓝牙） |
 
-从本机提取固件的脚本见 [lich-wang/tb710fu-hyperos-steamos](https://github.com/lich-wang/tb710fu-hyperos-steamos)（`tools/collect_firmware.sh`）。
+功放驱动按设备树的 `firmware-name` 请求 `qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin`，不会和其它机型根目录下的 `aw882xx_acf.bin` 冲突。
 
 ## 用户空间所需设置
 
