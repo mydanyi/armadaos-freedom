@@ -1,0 +1,106 @@
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -8627,7 +8627,12 @@
+ 		if (!static_branch_likely(&poc_selector_active) ||
+ 			static_branch_unlikely(&sched_poc_early_select))
+ #endif
+-		if ((unsigned int)recent_used_cpu < nr_cpumask_bits &&
++		/*
++		 * Asymmetric systems need the task-util sync below before the
++		 * capacity check; keep their existing later selection path.
++		 */
++		if (!sched_asym_cpucap_active() &&
++		    (unsigned int)recent_used_cpu < nr_cpumask_bits &&
+ 		    is_idle_core(recent_used_cpu))
+ 			return recent_used_cpu;
+ 	} else {
+@@ -9843,7 +9848,11 @@
+ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
+ {
+ 	struct sched_entity *se = &p->se;
+-	struct cfs_rq *cfs_rq = cfs_rq_of(se);
++	/*
++	 * inf_node entries live on the CPU root list, not the hierarchical
++	 * cgroup list that cfs_rq_of() may return.
++	 */
++	struct cfs_rq *cfs_rq = &task_rq(p)->cfs;
+ 
+ 	/* !se->on_rq also covers throttled task */
+ 	if (!se->on_rq || se->sched_delayed)
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -2509,7 +2509,20 @@
+ 		/* Slow path: shift required (e.g., Threadripper) */
+ 		int shift = sd_share->poc_affinity_shift;
+ 		u64 lo = cpumask_bits(mask)[base_word];
+-		u64 hi = cpumask_bits(mask)[base_word + 1];
++		u64 hi;
++
++		/* shift == 0 means no bits cross the word boundary */
++		if (!shift)
++			return lo;
++
++		/*
++		 * Guard the high-word load: the region may end at the last
++		 * allocated cpumask word.
++		 */
++		if (base_word + 1 < BITS_TO_LONGS(nr_cpumask_bits))
++			hi = cpumask_bits(mask)[base_word + 1];
++		else
++			hi = 0;
+ 		return (lo >> shift) | (hi << (64 - shift));
+ 	}
+ }
+--- a/drivers/gpu/drm/scheduler/sched_rq.c
++++ b/drivers/gpu/drm/scheduler/sched_rq.c
+@@ -542,6 +542,7 @@
+ static struct drm_gpu_scheduler *inf_tracked[INF_MAX_TRACKED];
+ static int inf_tracked_nr;
+ static DEFINE_MUTEX(inf_tracked_lock);
++static DEFINE_MUTEX(inf_lifecycle_lock);
+ static struct dentry *inf_dbg_dentry;
+ 
+ /* Copy with ~ truncation, ASCII only. */
+@@ -745,6 +746,7 @@
+ {
+ 	int i;
+ 
++	mutex_lock(&inf_lifecycle_lock);
+ 	mutex_lock(&inf_tracked_lock);
+ 	for (i = 0; i < inf_tracked_nr; i++) {
+ 		if (inf_tracked[i] == sched)
+@@ -759,12 +761,15 @@
+ 			inf_dbg_dentry = NULL;
+ 	}
+ 	mutex_unlock(&inf_tracked_lock);
++	mutex_unlock(&inf_lifecycle_lock);
+ }
+ 
+ void drm_sched_inf_untrack(struct drm_gpu_scheduler *sched)
+ {
++	struct dentry *dentry = NULL;
+ 	int i;
+ 
++	mutex_lock(&inf_lifecycle_lock);
+ 	mutex_lock(&inf_tracked_lock);
+ 	for (i = 0; i < inf_tracked_nr; i++) {
+ 		if (inf_tracked[i] == sched)
+@@ -776,8 +781,17 @@
+ 			(size_t)(inf_tracked_nr - i) * sizeof(inf_tracked[0]));
+ 	}
+ 	if (inf_tracked_nr == 0 && inf_dbg_dentry) {
+-		debugfs_remove(inf_dbg_dentry);
++		/*
++		 * Detach under tracked; remove outside it. debugfs_remove()
++		 * waits for active readers and inf_show() takes tracked, so
++		 * calling it here would deadlock. Readers only need tracked;
++		 * replacement is serialized by the lifecycle lock.
++		 */
++		dentry = inf_dbg_dentry;
+ 		inf_dbg_dentry = NULL;
+ 	}
+ 	mutex_unlock(&inf_tracked_lock);
++	if (dentry)
++		debugfs_remove(dentry);
++	mutex_unlock(&inf_lifecycle_lock);
+ }

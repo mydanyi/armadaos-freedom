@@ -1,0 +1,479 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galih Tama <galpt@v.recipes>
+Date: Sun, 20 Sep 2026 21:29:43 +0000
+Subject: [PATCH] infinity rt: timeslice neuter with bounded-LIFO
+
+RR slice mechanics neutered, policy plus POSIX kept.
+- struct rt_rq.inf_seq (bounded-LIFO 7+1) plus
+  struct sched_rt_entity.inf_slice_rem (fixed 1ms quantum);
+  time_slice kept as unused storage.
+- __enqueue seq-gated head/tail, requeue always tail,
+  task_tick fixed-quantum countdown, get_rr_interval 0.
+- sysctl /proc ABI kept (entries + storage); handler
+  side-effect-free.
+- Per-rt_rq discipline stats with debugfs infinity_rt table,
+  no Kconfig, no .inc; pick/yield/enqueue/
+  dequeue/put_prev/prio_changed/balance/push/pull kept.
+
+Signed-off-by: Galih Tama <galpt@v.recipes>
+---
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -625,6 +625,7 @@
+ 	unsigned long			timeout;
+ 	unsigned long			watchdog_stamp;
+ 	unsigned int			time_slice;
++	u64				inf_slice_rem;
+ 	unsigned short			on_rq;
+ 	unsigned short			on_list;
+ 
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -851,6 +851,13 @@
+ 	struct plist_head	pushable_tasks;
+ 
+ 	int			rt_queued;
++	u32			inf_seq;
++	u64			inf_head_inserts;
++	u64			inf_tail_inserts;
++	u64			inf_forced_requeues;
++	u64			inf_recharges;
++	u64			inf_expiries;
++	u64			inf_sole_skips;
+ 
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	int			rt_throttled;
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4605,7 +4605,8 @@
+ 
+ 	INIT_LIST_HEAD(&p->rt.run_list);
+ 	p->rt.timeout		= 0;
+-	p->rt.time_slice	= sched_rr_timeslice;
++	p->rt.time_slice	= 0;
++	p->rt.inf_slice_rem	= 0;
+ 	p->rt.on_rq		= 0;
+ 	p->rt.on_list		= 0;
+ 
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -6,7 +6,15 @@
+ 
+ #include "sched.h"
+ #include "pelt.h"
++#include <linux/debugfs.h>
+ 
++/*
++ * Infinity RT: fixed 1ms quantum for RR neutering. RR timeslice state is
++ * retained only for /proc ABI compatibility and is otherwise unused.
++ */
++#define INFINITY_RT_Q_BASE_NS	1000000ULL
++
++/* Unused storage, kept for /proc ABI compatibility. */
+ int sched_rr_timeslice = RR_TIMESLICE;
+ /* More than 4 hours if BW_SHIFT equals 20. */
+ static const u64 max_rt_runtime = MAX_BW;
+@@ -84,6 +92,13 @@
+ 	plist_head_init(&rt_rq->pushable_tasks);
+ 	/* We start is dequeued state, because no RT tasks are queued */
+ 	rt_rq->rt_queued = 0;
++	rt_rq->inf_seq = 0;
++	rt_rq->inf_head_inserts = 0;
++	rt_rq->inf_tail_inserts = 0;
++	rt_rq->inf_forced_requeues = 0;
++	rt_rq->inf_recharges = 0;
++	rt_rq->inf_expiries = 0;
++	rt_rq->inf_sole_skips = 0;
+ 
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	rt_rq->rt_time = 0;
+@@ -1349,10 +1364,26 @@
+ 
+ 	if (move_entity(flags)) {
+ 		WARN_ON_ONCE(rt_se->on_list);
+-		if (flags & ENQUEUE_HEAD)
++		if (flags & ENQUEUE_HEAD) {
++			/* Explicit head request is exempt, no seq advance. */
++			list_add(&rt_se->run_list, queue);
++			rt_rq->inf_head_inserts++;
++		} else if (rt_rq->inf_seq == (u32)-1) {
++			/* Wrap: force tail and wrap to zero. */
++			list_add_tail(&rt_se->run_list, queue);
++			rt_rq->inf_seq = 0;
++			rt_rq->inf_tail_inserts++;
++		} else if ((rt_rq->inf_seq & 7) != 7) {
++			/* Bounded LIFO: 7x head ... */
+ 			list_add(&rt_se->run_list, queue);
+-		else
++			rt_rq->inf_seq++;
++			rt_rq->inf_head_inserts++;
++		} else {
++			/* ... then 1x tail. */
+ 			list_add_tail(&rt_se->run_list, queue);
++			rt_rq->inf_seq++;
++			rt_rq->inf_tail_inserts++;
++		}
+ 
+ 		__set_bit(rt_se_prio(rt_se), array->bitmap);
+ 		rt_se->on_list = 1;
+@@ -1475,10 +1506,10 @@
+ 		struct rt_prio_array *array = &rt_rq->active;
+ 		struct list_head *queue = array->queue + rt_se_prio(rt_se);
+ 
+-		if (head)
+-			list_move(&rt_se->run_list, queue);
+-		else
+-			list_move_tail(&rt_se->run_list, queue);
++		/* Infinity: RR neutered, always tail. head arg ignored, no seq advance. */
++		(void)head;
++		list_move_tail(&rt_se->run_list, queue);
++		rt_rq->inf_forced_requeues++;
+ 	}
+ }
+ 
+@@ -2540,8 +2571,6 @@
+  */
+ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
+ {
+-	struct sched_rt_entity *rt_se = &p->rt;
+-
+ 	update_curr_rt(rq);
+ 	update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+ 
+@@ -2554,33 +2583,47 @@
+ 	if (p->policy != SCHED_RR)
+ 		return;
+ 
+-	if (--p->rt.time_slice)
+-		return;
+-
+-	p->rt.time_slice = sched_rr_timeslice;
+-
+ 	/*
+-	 * Requeue to the end of queue if we (and all of our ancestors) are not
+-	 * the only element on the queue
++	 * Infinity: fixed 1ms quantum countdown. Zero means recharge and
++	 * forced-tail requeue with resched.
+ 	 */
+-	for_each_sched_rt_entity(rt_se) {
+-		if (rt_se->run_list.prev != rt_se->run_list.next) {
+-			requeue_task_rt(rq, p, 0);
+-			resched_curr(rq);
+-			return;
++	if (p->rt.inf_slice_rem == 0) {
++		p->rt.inf_slice_rem = INFINITY_RT_Q_BASE_NS;
++		rq->rt.inf_recharges++;
++	}
++
++	if (p->rt.inf_slice_rem > (u64)(NSEC_PER_SEC / HZ)) {
++		p->rt.inf_slice_rem -= (u64)(NSEC_PER_SEC / HZ);
++	} else {
++		struct sched_rt_entity *rt_se = &p->rt;
++
++		/*
++		 * Carry remainder into the next quantum (top-up, not full
++		 * reset). u64-safe: this branch runs only when rem <=
++		 * TICK_NSEC, so rem + Q_BASE cannot overflow.
++		 * Skip forced-tail requeue+resched when sole element on
++		 * the queue (mirrors stock prev != next check).
++		 */
++		rq->rt.inf_expiries++;
++		p->rt.inf_slice_rem += INFINITY_RT_Q_BASE_NS;
++		for_each_sched_rt_entity(rt_se) {
++			if (rt_se->run_list.prev != rt_se->run_list.next) {
++				requeue_task_rt(rq, p, 0);
++				resched_curr(rq);
++				return;
++			}
+ 		}
++		rq->rt.inf_sole_skips++;
+ 	}
+ }
+ 
+ static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
+ {
+ 	/*
+-	 * Time slice is 0 for SCHED_FIFO tasks
++	 * Infinity: RR quantum neutered. Zero means infinity per the
++	 * timespec convention (see sys_sched_rr_get_interval).
+ 	 */
+-	if (task->policy == SCHED_RR)
+-		return sched_rr_timeslice;
+-	else
+-		return 0;
++	return 0;
+ }
+ 
+ #ifdef CONFIG_SCHED_CORE
+@@ -2917,17 +2960,9 @@
+ 	mutex_lock(&mutex);
+ 	ret = proc_dointvec(table, write, buffer, lenp, ppos);
+ 	/*
+-	 * Make sure that internally we keep jiffies.
+-	 * Also, writing zero resets the time-slice to default:
++	 * Infinity: RR timeslice neutered. Keep /proc ABI storage but ignore
++	 * writes; side-effect-free, the RR store is never updated.
+ 	 */
+-	if (!ret && write) {
+-		sched_rr_timeslice =
+-			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
+-			msecs_to_jiffies(sysctl_sched_rr_timeslice);
+-
+-		if (sysctl_sched_rr_timeslice <= 0)
+-			sysctl_sched_rr_timeslice = jiffies_to_msecs(RR_TIMESLICE);
+-	}
+ 	mutex_unlock(&mutex);
+ 
+ 	return ret;
+@@ -2944,3 +2979,251 @@
+ 		print_rt_rq(m, cpu, rt_rq);
+ 	rcu_read_unlock();
+ }
++
++/*
++ * Infinity RT stats: per-rt_rq counters summed at read.
++ * Renderer is a static copy for revert-independence.
++ * Counters are plain u64, updated under rq lock, summed at read.
++ */
++#define INF_RT_LABEL_CAP 32
++#define INF_RT_NOTE_CAP 48
++#define INF_RT_VAL_W 8
++
++/*
++ * Integer only pretty for counters: plain below 100000,
++ * else scaled K/M/B/T/P/E with one decimal.
++ * No floating point: the kernel has no FPU in sched context.
++ */
++static void inf_rt_pretty(u64 v, char *buf, size_t sz)
++{
++	const char *suf = "";
++	u64 div = 1;
++	u64 whole;
++	unsigned int tenth;
++
++	if (v < 100000ULL) {
++		snprintf(buf, sz, "%llu", (unsigned long long)v);
++		return;
++	}
++	if (v >= 1000000000000000000ULL) {
++		suf = "E";
++		div = 1000000000000000000ULL;
++	} else if (v >= 1000000000000000ULL) {
++		suf = "P";
++		div = 1000000000000000ULL;
++	} else if (v >= 1000000000000ULL) {
++		suf = "T";
++		div = 1000000000000ULL;
++	} else if (v >= 1000000000ULL) {
++		suf = "B";
++		div = 1000000000ULL;
++	} else if (v >= 1000000ULL) {
++		suf = "M";
++		div = 1000000ULL;
++	} else {
++		suf = "K";
++		div = 1000ULL;
++	}
++	whole = v / div;
++	if (whole >= 10) {
++		snprintf(buf, sz, "%llu%s", (unsigned long long)whole, suf);
++		return;
++	}
++	tenth = (unsigned int)((v % div) * 10ULL / div);
++	snprintf(buf, sz, "%llu.%u%s", (unsigned long long)whole, tenth, suf);
++}
++
++static void inf_rt_copy_trunc(char *dst, const char *src, size_t cap)
++{
++	size_t len = strlen(src);
++
++	if (len <= cap) {
++		strscpy(dst, src, cap + 1);
++	} else {
++		memcpy(dst, src, cap - 1);
++		dst[cap - 1] = '~';
++		dst[cap] = '\0';
++	}
++}
++
++static void inf_rt_emit_sep(struct seq_file *m, unsigned int lw,
++			    unsigned int vw, unsigned int nw)
++{
++	unsigned int i;
++
++	seq_putc(m, '+');
++	for (i = 0; i < lw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	for (i = 0; i < vw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	for (i = 0; i < nw + 2; i++)
++		seq_putc(m, '-');
++	seq_putc(m, '+');
++	seq_putc(m, '\n');
++}
++
++struct inf_rt_stat_row {
++	const char *label;
++	u64 val;
++	const char *note;
++};
++
++static int inf_rt_show(struct seq_file *m, void *v)
++{
++	struct inf_rt_stat_row rows[6];
++	u64 head;
++	u64 tail;
++	u64 forced;
++	u64 rech;
++	u64 exp;
++	u64 sole;
++	unsigned int lw;
++	unsigned int vw;
++	unsigned int nw;
++	unsigned int i;
++	char valbuf[INF_RT_VAL_W + 1];
++	char labbuf[INF_RT_LABEL_CAP + 1];
++	char notebuf[INF_RT_NOTE_CAP + 1];
++	bool first;
++	int cpu;
++	rt_rq_iter_t iter;
++	struct rt_rq *rt_rq;
++
++	head = 0;
++	tail = 0;
++	forced = 0;
++	rech = 0;
++	exp = 0;
++	sole = 0;
++
++	/*
++	 * Sum across CPUs and groups. for_each_rt_rq walks groups
++	 * when enabled, otherwise root only. Mirrors print_rt_stats.
++	 */
++	for_each_possible_cpu(cpu) {
++		rcu_read_lock();
++		for_each_rt_rq(rt_rq, iter, cpu_rq(cpu)) {
++			head += READ_ONCE(rt_rq->inf_head_inserts);
++			tail += READ_ONCE(rt_rq->inf_tail_inserts);
++			forced += READ_ONCE(rt_rq->inf_forced_requeues);
++			rech += READ_ONCE(rt_rq->inf_recharges);
++			exp += READ_ONCE(rt_rq->inf_expiries);
++			sole += READ_ONCE(rt_rq->inf_sole_skips);
++		}
++		rcu_read_unlock();
++	}
++
++	rows[0].label = "head_inserts";
++	rows[0].val = head;
++	rows[0].note = "strict head";
++	rows[1].label = "tail_inserts";
++	rows[1].val = tail;
++	rows[1].note = "incl. wrap";
++	rows[2].label = "forced_requeue";
++	rows[2].val = forced;
++	rows[2].note = "starvation guard";
++	rows[3].label = "recharges";
++	rows[3].val = rech;
++	rows[3].note = "tick arming";
++	rows[4].label = "expiries";
++	rows[4].val = exp;
++	rows[4].note = "slice expiry";
++	rows[5].label = "sole_skips";
++	rows[5].val = sole;
++	rows[5].note = "sole fast-skip";
++
++	/* One pass to size label and note columns. */
++	lw = strlen("counter");
++	nw = strlen("note");
++	for (i = 0; i < ARRAY_SIZE(rows); i++) {
++		unsigned int ll = strlen(rows[i].label);
++		unsigned int nl = strlen(rows[i].note);
++
++		if (ll > lw)
++			lw = ll;
++		if (nl > nw)
++			nw = nl;
++	}
++
++	if (lw > INF_RT_LABEL_CAP)
++		lw = INF_RT_LABEL_CAP;
++	if (nw > INF_RT_NOTE_CAP)
++		nw = INF_RT_NOTE_CAP;
++	vw = INF_RT_VAL_W;
++
++	inf_rt_emit_sep(m, lw, vw, nw);
++	seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, "counter", vw,
++		   "value", nw, "note");
++	inf_rt_emit_sep(m, lw, vw, nw);
++
++	first = true;
++	for (i = 0; i < ARRAY_SIZE(rows); i++) {
++		char tmp[128];
++		int rlen;
++		int blen;
++
++		inf_rt_pretty(rows[i].val, valbuf, sizeof(valbuf));
++		inf_rt_copy_trunc(labbuf, rows[i].label,
++				  INF_RT_LABEL_CAP);
++		inf_rt_copy_trunc(notebuf, rows[i].note,
++				  INF_RT_NOTE_CAP);
++		valbuf[vw] = '\0';
++		seq_printf(m, "| %-*s | %*s | %-*s |\n", lw, labbuf, vw,
++			   valbuf, nw, notebuf);
++		if (first) {
++			char bdr[128];
++			int j1 = (int)lw + 3, j2 = (int)lw + (int)vw + 6;
++			int j3 = (int)lw + (int)vw + (int)nw + 9;
++			int k;
++
++			first = false;
++			rlen = snprintf(tmp, sizeof(tmp),
++					"| %-*s | %*s | %-*s |",
++					lw, labbuf, vw, valbuf, nw,
++					notebuf);
++			blen = (int)(lw + vw + nw + 10);
++			WARN_ON(rlen != blen);
++			/*
++			 * Junction check: every '+' in the separator must
++			 * sit exactly under a '|' in data rows. Border math
++			 * below mirrors inf_rt_emit_sep on purpose, so any
++			 * drift between the two trips the WARN instead of
++			 * printing a skewed box.
++			 */
++			memset(bdr, '-', sizeof(bdr));
++			bdr[0] = '+';
++			bdr[j1] = '+';
++			bdr[j2] = '+';
++			bdr[j3] = '+';
++			bdr[j3 + 1] = '\0';
++			for (k = 0; tmp[k]; k++)
++				WARN_ON((bdr[k] == '+') != (tmp[k] == '|'));
++		}
++	}
++
++	inf_rt_emit_sep(m, lw, vw, nw);
++
++	return 0;
++}
++
++static int inf_rt_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, inf_rt_show, NULL);
++}
++
++static const struct file_operations inf_rt_fops = {
++	.open = inf_rt_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static int __init inf_rt_debug_init(void)
++{
++	debugfs_create_file("infinity_rt", 0444, NULL, NULL,
++			    &inf_rt_fops);
++	return 0;
++}
++late_initcall(inf_rt_debug_init);
