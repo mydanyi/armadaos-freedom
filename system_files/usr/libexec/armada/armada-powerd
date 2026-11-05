@@ -39,16 +39,27 @@ def normalize_profile(profile):
 
 def ensure_extreme_profile(parser):
     # Old three-profile configs stay valid: synthesize [profile.extreme] from the
-    # effective performance section, copying only fields it does not already set.
+    # effective performance section. An existing extreme section is independent:
+    # only fill missing required fields, never optional per-policy caps.
     section = "profile.extreme"
-    if not parser.has_section(section):
+    absent = not parser.has_section(section)
+    if absent:
         parser.add_section(section)
-    if not parser.has_option(section, "label"):
-        parser.set(section, "label", "Extreme")
+        if not parser.has_option(section, "label"):
+            parser.set(section, "label", "Extreme")
     if parser.has_section("profile.performance"):
-        for key, value in parser.items("profile.performance"):
+        if absent:
+            source = list(parser.items("profile.performance"))
+        else:
+            source = [(key, parser.get("profile.performance", key))
+                      for key in ("cpu_governor", "cpu_max", "cpu_underclock",
+                                  "gpu_max", "gpu_min", "fan_curve")
+                      if parser.has_option("profile.performance", key)]
+        for key, value in source:
             if not parser.has_option(section, key):
                 parser.set(section, key, value)
+    if not parser.has_option(section, "label"):
+        parser.set(section, "label", "Extreme")
 
 
 XML = f"""
