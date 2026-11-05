@@ -1,0 +1,4 @@
+# NetworkManager's 85-nm-unmanaged.rules leaves every USB gadget interface unmanaged. Hand only the
+# network function of Armada's own gadgets back to it (the standalone USB network gadget, or the MTP
+# gadget while USB file transfer is on), so armada-usb.nmconnection can address usb0.
+SUBSYSTEM=="net", ENV{DEVTYPE}=="gadget", DRIVERS=="configfs-gadget.armada-usb-network|configfs-gadget.armada-mtp", ENV{NM_UNMANAGED}="0"

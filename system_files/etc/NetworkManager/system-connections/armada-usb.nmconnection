@@ -1,0 +1,22 @@
+# Tablet side of the USB network link (armada-usb-network.service or the MTP gadget):
+# 172.16.42.1/24, DHCP for the computer. Matches only the network function of Armada's own
+# USB gadgets (NetworkManager reports the gadget's configfs driver), never a USB Ethernet
+# adapter that happens to be called usb0.
+[connection]
+id=armada-usb
+type=ethernet
+interface-name=usb0
+autoconnect=true
+
+[match]
+driver=configfs-gadget.armada-usb-network;configfs-gadget.armada-mtp;
+
+[ethernet]
+
+[ipv4]
+method=shared
+address1=172.16.42.1/24
+
+[ipv6]
+method=link-local
+addr-gen-mode=stable-privacy

@@ -1,0 +1,123 @@
+#!/usr/bin/bash
+# USB network link (CDC NCM, 172.16.42.1/24 on the tablet) for devices whose profile sets
+# ARMADA_USB_NETWORK=1, and the SSH socket that listens on it.
+#
+# The link lives in one of two gadgets, never both, because the device has one USB device
+# controller:
+#   - its own gadget (armada-usb-network.service) while USB file transfer is off;
+#   - the MTP gadget (armada-mtp.service drop-in) while USB file transfer is on, as an
+#     MTP + network composite device.
+# NetworkManager addresses usb0 through armada-usb.nmconnection in either case.
+set -euo pipefail
+
+gadget=/sys/kernel/config/usb_gadget/armada-usb-network
+config="$gadget/configs/c.1"
+function_name=ncm.usb0
+
+enabled() {
+    local ARMADA_USB_NETWORK=
+    eval "$("${ARMADA_DEVICE_ENV:-/usr/libexec/armada/device-env}")"
+    [[ "${ARMADA_USB_NETWORK:-}" == 1 ]]
+}
+
+stopping() {
+    local state
+    state="$(systemctl is-system-running 2>/dev/null || true)"
+    [[ "$state" == stopping ]]
+}
+
+udc_name() {
+    shopt -s nullglob
+    local udcs=(/sys/class/udc/*)
+    ((${#udcs[@]} > 0)) || return 1
+    printf '%s' "${udcs[0]##*/}"
+}
+
+unbind() {
+    if [[ -e "$gadget/UDC" && -n "$(<"$gadget/UDC")" ]]; then
+        printf '\n' > "$gadget/UDC" || :
+    fi
+}
+
+teardown() {
+    unbind
+    [[ ! -L "$config/$function_name" ]] || rm "$config/$function_name" || :
+    [[ ! -d "$gadget/functions/$function_name" ]] || rmdir "$gadget/functions/$function_name" || :
+    [[ ! -d "$config/strings/0x409" ]] || rmdir "$config/strings/0x409" || :
+    [[ ! -d "$config" ]] || rmdir "$config" || :
+    [[ ! -d "$gadget/strings/0x409" ]] || rmdir "$gadget/strings/0x409" || :
+    [[ ! -d "$gadget" ]] || rmdir "$gadget" || :
+}
+
+start() {
+    /usr/sbin/modprobe libcomposite
+    if ! mountpoint -q /sys/kernel/config; then
+        mount -t configfs configfs /sys/kernel/config
+    fi
+    # A gadget left behind by a crash is rebuilt, never reused half-configured.
+    [[ ! -e "$gadget" ]] || teardown
+    local udc
+    for _ in $(seq 30); do
+        udc="$(udc_name)" && break
+        sleep 1
+    done
+    [[ -n "${udc:-}" ]] || { printf 'armada-usb-network: no USB device controller found\n' >&2; exit 1; }
+
+    mkdir "$gadget"
+    printf '0x1d6b' > "$gadget/idVendor"
+    printf '0x0104' > "$gadget/idProduct"
+    printf '0x0200' > "$gadget/bcdUSB"
+    mkdir "$gadget/strings/0x409"
+    printf 'Armada' > "$gadget/strings/0x409/manufacturer"
+    printf 'Armada USB network' > "$gadget/strings/0x409/product"
+    mkdir "$config" "$config/strings/0x409"
+    printf 'NCM' > "$config/strings/0x409/configuration"
+    mkdir "$gadget/functions/$function_name"
+    ln -s "$gadget/functions/$function_name" "$config/$function_name"
+    printf '%s' "$udc" > "$gadget/UDC"
+}
+
+# Adds the network function to another gadget's c.1 before that gadget is bound.
+attach() {
+    local other=$1
+    enabled || return 0
+    mkdir -p "$other/functions/$function_name"
+    [[ -L "$other/configs/c.1/$function_name" ]] \
+        || ln -s "$other/functions/$function_name" "$other/configs/c.1/$function_name"
+}
+
+# Removes it again after the other gadget is unbound, so its teardown can remove c.1.
+detach() {
+    local other=$1
+    [[ ! -L "$other/configs/c.1/$function_name" ]] || rm "$other/configs/c.1/$function_name" || :
+    [[ ! -d "$other/functions/$function_name" ]] || rmdir "$other/functions/$function_name" || :
+}
+
+# Brings the standalone link back once USB file transfer is off.
+resume() {
+    enabled || return 0
+    stopping && return 0
+    systemctl --no-block start armada-usb-network.service
+}
+
+# Brings the USB SSH socket back once the system-wide sshd is off.
+ssh_resume() {
+    enabled || return 0
+    stopping && return 0
+    systemctl is-active --quiet sshd.service && return 0
+    systemctl --no-block start armada-usb-ssh.socket
+}
+
+case "${1:-}" in
+    enabled) enabled ;;
+    start) start ;;
+    stop) teardown ;;
+    attach) attach "${2:?gadget path}" ;;
+    detach) detach "${2:?gadget path}" ;;
+    resume) resume ;;
+    ssh-resume) ssh_resume ;;
+    *)
+        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume}\n' "$0" >&2
+        exit 2
+        ;;
+esac
