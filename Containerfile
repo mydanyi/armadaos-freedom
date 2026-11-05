@@ -163,6 +163,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=btop-cn,source=/rpms,target=/packages/btop-cn \
     --mount=type=bind,from=decky-build,source=/build/freedom-control/dist,target=/packages/decky-dist \
     --mount=type=bind,from=decky-build,source=/build/armada-store/dist,target=/packages/decky-store-dist \
+    --mount=type=secret,id=decky_releases,target=/run/secrets/decky_releases,required=false \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \

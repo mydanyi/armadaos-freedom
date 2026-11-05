@@ -205,6 +205,15 @@ jobs:
           buildah info --storage-opt=overlay.mount_program= |
             jq -e '.store.GraphStatus["Native Overlay Diff"] == "true"'
 
+      - name: Fetch Decky release list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            'repos/SteamDeckHomebrew/decky-loader/releases?per_page=100' \
+            >"$RUNNER_TEMP/decky-releases.json"
+
       - name: Build container image
         id: build_image
         uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
@@ -221,6 +230,7 @@ jobs:
           # armada-rootfs is consumed through RUN --mount, so retain otherwise-unused stages.
           extra-args: |
             --build-arg-file=${{ runner.temp }}/package-refs.env
+            --secret=id=decky_releases,src=${{ runner.temp }}/decky-releases.json
             --skip-unused-stages=false
             --target=chunkah
             --volume=${{ runner.temp }}:/run/src

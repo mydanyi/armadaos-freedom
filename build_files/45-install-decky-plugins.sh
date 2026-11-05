@@ -19,17 +19,22 @@ install_plugin armada-control /packages/decky-dist /ctx/decky/freedom-control/de
 install_plugin armada-store /packages/decky-store-dist
 chmod 0755 /usr/lib/decky-loader/armada-decky-sync
 
-decky_release="$(
-    curl --retry 12 --retry-delay 10 -fsSL \
-        'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases?per_page=100' |
-        jq -ce '
+decky_release_jq='
             [.[] | select(.draft != true and .prerelease == true)]
             | if length == 0
               then error("no Decky Loader preview release found")
               else max_by(.published_at)
               end
         '
-)"
+if [[ -e /run/secrets/decky_releases ]]; then
+    decky_release="$(jq -ce "${decky_release_jq}" /run/secrets/decky_releases)"
+else
+    decky_release="$(
+        curl --retry 12 --retry-delay 10 -fsSL \
+            'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases?per_page=100' |
+            jq -ce "${decky_release_jq}"
+    )"
+fi
 decky_version="$(jq -er '.tag_name | select(type == "string" and length > 0)' <<<"${decky_release}")"
 [[ "${decky_version}" =~ ^[A-Za-z0-9._+-]+$ ]]
 [[ "$(jq -r '.draft // false' <<<"${decky_release}")" == "false" ]]
