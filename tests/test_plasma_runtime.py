@@ -1,13 +1,13 @@
 import importlib.util
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / 'build_files' / 'verify_plasma_runtime.py'
-LOADER = '/lib/ld-linux-aarch64.so.1'
 TAB = chr(9)
 NEWLINE = chr(10)
 
@@ -154,32 +154,53 @@ class VerifyRuntimeTest(unittest.TestCase):
                 self.verify.verify_runtime(Path('/tmp'))
         run.assert_not_called()
 
-    def test_normal_version_checks_use_loader_and_no_session(self):
+    def _write_kwin_fixture(self, directory, payload):
+        original = Path(directory) / 'kwin_wayland.source'
+        original.write_bytes(payload)
+        return original
+
+    def test_version_check_runs_private_copy_and_no_session(self):
+        self.assertEqual(self.verify.KWIN_BINARY, '/usr/bin/kwin_wayland')
+        payload = b'private kwin copy' + NEWLINE.encode('ascii')
         results = [
             self._completed(stdout=''),
             self._completed(stdout='kwin 6.8.2' + NEWLINE),
             self._completed(stdout='plasmashell 6.8.2' + NEWLINE),
         ]
-        with mock.patch.object(
-            self.verify.subprocess, 'run', side_effect=results
-        ) as run, mock.patch.object(
-            self.verify, '_aarch64_loader', return_value=LOADER
-        ):
-            self.verify.verify_runtime()
+        calls = []
 
-        self.assertEqual(run.call_count, 3)
-        commands = [call[0][0] for call in run.call_args_list]
-        self.assertEqual(commands[0], ['ldd', '-r', '/usr/bin/kwin_wayland'])
-        self.assertEqual(
-            commands[1],
-            [LOADER, '/usr/bin/kwin_wayland', '--version'],
-        )
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            if command[0] not in ('ldd', '/usr/bin/plasmashell'):
+                copy = Path(command[0])
+                self.assertTrue(copy.is_file())
+                self.assertEqual(copy.read_bytes(), payload)
+            return results[len(calls) - 1]
+
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._write_kwin_fixture(directory, payload)
+            with mock.patch.object(
+                self.verify, 'KWIN_BINARY', str(original)
+            ), mock.patch.object(
+                self.verify.subprocess, 'run', side_effect=fake_run
+            ):
+                self.verify.verify_runtime()
+            copied = calls[1][0][0]
+            self.assertNotEqual(copied, str(original))
+            self.assertFalse(Path(copied).exists())
+            self.assertEqual(original.read_bytes(), payload)
+
+        self.assertEqual(len(calls), 3)
+        commands = [command for command, _ in calls]
+        self.assertEqual(commands[0], ['ldd', '-r', str(original)])
+        self.assertEqual(commands[1][1:], ['--version'])
         self.assertEqual(commands[2], ['/usr/bin/plasmashell', '--version'])
-        for call in run.call_args_list:
-            environment = call[1]['env']
+        for _, kwargs in calls:
+            environment = kwargs['env']
             self.assertEqual(environment['QT_QPA_PLATFORM'], 'minimal')
             self.assertEqual(environment['LD_BIND_NOW'], '1')
-            self.assertGreater(call[1]['timeout'], 0)
+            self.assertEqual(environment['QT_FORCE_STDERR_LOGGING'], '1')
+            self.assertGreater(kwargs['timeout'], 0)
 
         rendered = ' '.join(' '.join(command) for command in commands)
         for forbidden in (
@@ -190,15 +211,59 @@ class VerifyRuntimeTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, rendered)
 
+    def test_private_copy_removed_after_kwin_failure(self):
+        payload = b'kwin failure copy'
+        results = [
+            self._completed(stdout=''),
+            self._completed(returncode=1, stderr='platform plugin failure'),
+        ]
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return results[len(calls) - 1]
+
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._write_kwin_fixture(directory, payload)
+            with mock.patch.object(
+                self.verify, 'KWIN_BINARY', str(original)
+            ), mock.patch.object(
+                self.verify.subprocess, 'run', side_effect=fake_run
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    self.verify.verify_runtime()
+            copied = calls[1][0]
+            self.assertFalse(Path(copied).exists())
+            self.assertEqual(original.read_bytes(), payload)
+        self.assertIn('exited 1', str(raised.exception))
+
+    def test_copy_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._write_kwin_fixture(directory, b'kwin copy')
+            with mock.patch.object(
+                self.verify, 'KWIN_BINARY', str(original)
+            ), mock.patch.object(
+                self.verify.subprocess,
+                'run',
+                side_effect=[self._completed(stdout='')],
+            ) as run, mock.patch.object(
+                self.verify.shutil,
+                'copyfile',
+                side_effect=OSError('no space left'),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    self.verify.verify_runtime()
+        self.assertIn('could not prepare', str(raised.exception))
+        self.assertIn('no space left', str(raised.exception))
+        self.assertEqual(run.call_count, 1)
+
     def test_undefined_symbol_with_zero_exit_fails(self):
         result = self._completed(
             stdout=TAB + 'libexample.so: undefined symbol: example_symbol' + NEWLINE
         )
         with mock.patch.object(
             self.verify.subprocess, 'run', side_effect=[result]
-        ) as run, mock.patch.object(
-            self.verify, '_aarch64_loader', return_value=LOADER
-        ):
+        ) as run:
             with self.assertRaises(RuntimeError) as raised:
                 self.verify.verify_runtime()
         self.assertIn('undefined symbol', str(raised.exception).lower())
@@ -210,8 +275,6 @@ class VerifyRuntimeTest(unittest.TestCase):
         )
         with mock.patch.object(
             self.verify.subprocess, 'run', side_effect=[result]
-        ), mock.patch.object(
-            self.verify, '_aarch64_loader', return_value=LOADER
         ):
             with self.assertRaises(RuntimeError) as raised:
                 self.verify.verify_runtime()
@@ -221,12 +284,11 @@ class VerifyRuntimeTest(unittest.TestCase):
         result = self._completed(returncode=1, stderr='dynamic loader error')
         with mock.patch.object(
             self.verify.subprocess, 'run', side_effect=[result]
-        ), mock.patch.object(
-            self.verify, '_aarch64_loader', return_value=LOADER
-        ):
+        ) as run:
             with self.assertRaises(RuntimeError) as raised:
                 self.verify.verify_runtime()
         self.assertIn('exited 1', str(raised.exception))
+        self.assertEqual(run.call_count, 1)
 
     def test_timeout_fails(self):
         timeout_error = subprocess.TimeoutExpired(
@@ -235,8 +297,6 @@ class VerifyRuntimeTest(unittest.TestCase):
         )
         with mock.patch.object(
             self.verify.subprocess, 'run', side_effect=timeout_error
-        ), mock.patch.object(
-            self.verify, '_aarch64_loader', return_value=LOADER
         ):
             with self.assertRaises(RuntimeError) as raised:
                 self.verify.verify_runtime()

@@ -3,8 +3,10 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 CORE_PACKAGES = (
@@ -30,16 +32,14 @@ RPM_QUERY_FORMAT = '%{NAME}' + chr(9) + '%{VERSION}' + chr(10)
 RPM_TIMEOUT_SECONDS = 180
 LDD_TIMEOUT_SECONDS = 300
 VERSION_TIMEOUT_SECONDS = 60
-AARCH64_LOADERS = (
-    Path('/lib/ld-linux-aarch64.so.1'),
-    Path('/lib64/ld-linux-aarch64.so.1'),
-)
+KWIN_BINARY = '/usr/bin/kwin_wayland'
 
 
 def _runtime_environment():
     environment = os.environ.copy()
     environment['QT_QPA_PLATFORM'] = 'minimal'
     environment['LD_BIND_NOW'] = '1'
+    environment['QT_FORCE_STDERR_LOGGING'] = '1'
     return environment
 
 
@@ -139,14 +139,6 @@ def verify_packages(root=Path('/')):
     return _parse_rpm_output(stdout, root)
 
 
-def _aarch64_loader():
-    for candidate in AARCH64_LOADERS:
-        if candidate.is_file():
-            return str(candidate)
-    choices = ', '.join(str(path) for path in AARCH64_LOADERS)
-    raise RuntimeError(f'no aarch64 glibc loader found; looked for {choices}')
-
-
 def _combined_output(result):
     return chr(10).join(
         part for part in (result.stdout, result.stderr) if part
@@ -158,14 +150,14 @@ def verify_runtime(root=Path('/')):
         raise RuntimeError('runtime verification requires --root /')
 
     ldd = _run(
-        ['ldd', '-r', '/usr/bin/kwin_wayland'],
+        ['ldd', '-r', KWIN_BINARY],
         'ldd runtime check',
         LDD_TIMEOUT_SECONDS,
     )
     ldd_output = _combined_output(ldd)
     if ldd.returncode != 0:
         raise RuntimeError(
-            f'ldd -r /usr/bin/kwin_wayland exited {ldd.returncode}: {ldd_output.strip()}'
+            f'ldd -r {KWIN_BINARY} exited {ldd.returncode}: {ldd_output.strip()}'
         )
     lowered = ldd_output.lower()
     if 'undefined symbol' in lowered or 'not found' in lowered:
@@ -174,12 +166,20 @@ def verify_runtime(root=Path('/')):
             f'KWin runtime reports {marker} from ldd -r: {ldd_output.strip()}'
         )
 
-    loader = _aarch64_loader()
-    kwin = _run(
-        [loader, '/usr/bin/kwin_wayland', '--version'],
-        'KWin version check',
-        VERSION_TIMEOUT_SECONDS,
-    )
+    with tempfile.TemporaryDirectory(prefix='kwin-version-') as directory:
+        kwin_copy = Path(directory) / 'kwin_wayland'
+        try:
+            shutil.copyfile(KWIN_BINARY, kwin_copy)
+            kwin_copy.chmod(0o755)
+        except OSError as error:
+            raise RuntimeError(
+                f'KWin version check could not prepare a private copy of {KWIN_BINARY}: {error}'
+            ) from error
+        kwin = _run(
+            [str(kwin_copy), '--version'],
+            'KWin version check',
+            VERSION_TIMEOUT_SECONDS,
+        )
     if kwin.returncode != 0:
         raise RuntimeError(
             f'KWin version check exited {kwin.returncode}: {_combined_output(kwin).strip()}'
