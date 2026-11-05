@@ -499,16 +499,17 @@ class ArmadaPower:
         self.scx_spec = None
 
     def enforce_scheduler(self, values):
-        desired = values.get("scheduler", "eevdf")
+        desired = armada_perf.resolve_scheduler(values.get("scheduler"))
         domain = values.get("schedulerDomain") or []
         if desired == "cosmos" and domain:
             spec = ("cosmos", armada_perf.format_cpulist(domain))
         elif desired in ("cosmos", "lavd"):
             spec = (desired, "")
         else:
+            # kernel default (eevdf or infinity): not managed via scx
             spec = None
         if self.scx_child and self.scx_child.poll() is not None:
-            # sched_ext already fell back to EEVDF when the child died.
+            # sched_ext already fell back to the kernel default when the child died.
             print(f"armada-powerd: scx {self.scx_spec} exited "
                   f"{self.scx_child.returncode}", file=sys.stderr)
             self.scx_failed = (self.scx_spec, time.monotonic() + 60)
@@ -516,8 +517,8 @@ class ArmadaPower:
             self.scx_spec = None
         if spec == self.scx_spec:
             return
-        # stop first: a backed-off request must fall back to EEVDF, never
-        # leave a stale different scx running
+        # stop first: a backed-off request must fall back to the kernel
+        # default, never leave a stale different scx running
         self.stop_scx()
         if spec is None:
             return
