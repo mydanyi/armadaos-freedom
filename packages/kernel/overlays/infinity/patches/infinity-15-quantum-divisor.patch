@@ -1,0 +1,20 @@
+From: h0cheung <hcheunh@gmail.com>
+Subject: [PATCH] infinity: preserve 64-bit quantum divisor
+
+Use the full 64-bit hierarchical weight sum on ARM64. div_u64()
+takes a u32 divisor and truncates sums at or above 2^32.
+
+---
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index c7ff6d8..277bd99 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -6138,7 +6138,7 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 
+ 		if (!W)
+ 			W = 1;
+-		q = div_u64(INFINITY_Q_BASE_NS * (u64)w, (u64)W);
++		q = div64_u64(INFINITY_Q_BASE_NS * (u64)w, (u64)W);
+ 		if (!q)
+ 			q = 1;
+ 		se->inf_slice_rem = q;

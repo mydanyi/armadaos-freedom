@@ -308,6 +308,25 @@ KVER=$(make "${MAKE_ARGS[@]}" -s kernelrelease)
 echo "==> Kernel version: ${KVER}"
 echo "==> Compiler: $(sed -n 's/^CONFIG_CC_VERSION_TEXT="\(.*\)"$/\1/p' .config)"
 
+# Infinity overlay requires its LOCALVERSION in kernelrelease; refuse silently
+# mis-versioned artifacts before they get staged or packaged.
+# Iterate the overlay tokens so whitespace (tabs, multiple spaces) normalizes
+# to a token set and ``infinity`` matches exactly once; ``infinity-extra``
+# does NOT match ``infinity``.
+for ov in ${KERNEL_OVERLAYS:-}; do
+  if [ "${ov}" = "infinity" ]; then
+    case "${KVER}" in
+      *-freedom-infinity) ;;
+      *)
+        echo "ERROR: infinity overlay requested but kernelrelease '${KVER}' does not end with -freedom-infinity;" >&2
+        echo "       check overlays/infinity/config/infinity.config is present and survived merge_config." >&2
+        exit 1
+        ;;
+    esac
+    break
+  fi
+done
+
 # ---------- 5. Build ----------
 echo "==> Building Image + dtbs + modules"
 make "${MAKE_ARGS[@]}" Image dtbs modules
@@ -416,6 +435,35 @@ DTBs included: $(ls ${DTS_DIR}/*.dts | wc -l) boards (SM8250 + SM8550 + SM8650 +
 Repackaged for: armada
 EOF
 [ -z "${KERNEL_OVERLAYS}" ] || echo "Overlays: ${KERNEL_OVERLAYS}" >> "${STAGE}/lib/modules/${KVER}/.armada-source"
+
+# >>> freedom-scheduler-capability >>>
+# Emit a versioned capability marker under lib/modules/${KVER}/freedom-scheduler
+# only when the infinity overlay is active. Ordinary and other-overlay builds
+# must not receive this marker. No binary or fake module is created; the file
+# is a plain text capability contract read by userspace.
+# The overlay list is iterated as words so tabs/multiple spaces normalize to
+# the same token set; only the exact token ``infinity`` triggers staging.
+infinity_active=0
+for ov in ${KERNEL_OVERLAYS:-}; do
+  if [ "${ov}" = "infinity" ]; then
+    infinity_active=1
+    break
+  fi
+done
+if [ "${infinity_active}" -eq 1 ]; then
+  case "${KVER:-}" in
+    *-freedom-infinity) ;;
+    *)
+      echo "ERROR: refusing to stage infinity marker: kernelrelease '${KVER:-}' lacks -freedom-infinity" >&2
+      exit 1
+      ;;
+  esac
+  marker_dir="${STAGE}/lib/modules/${KVER}"
+  mkdir -p "${marker_dir}"
+  printf 'infinity-v1\n' > "${marker_dir}/freedom-scheduler"
+  echo "==> Staged freedom-scheduler capability: infinity-v1"
+fi
+# <<< freedom-scheduler-capability <<<
 
 # ---------- 7. Package ----------
 OUT_NAME="armada-kernel-${KVER}.tar.zst"
