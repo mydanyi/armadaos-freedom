@@ -1,0 +1,13 @@
+diff --git a/arch/arm64/boot/dts/qcom/baldur-display.dtsi b/arch/arm64/boot/dts/qcom/baldur-display.dtsi
+index d1986cc..89d5036 100644
+--- a/arch/arm64/boot/dts/qcom/baldur-display.dtsi
++++ b/arch/arm64/boot/dts/qcom/baldur-display.dtsi
+@@ -117,3 +117,8 @@
+ 	vdds-supply = <&vreg_l3d_0p8>;
+ 	status = "okay";
+ };
++
++/* Fixed ID avoids inaccessible hardware-ID read on this board. */
++&{/soc@0/tpdm@10003000} {
++	arm,primecell-periphid = <0x000f0e00>;
++};
