@@ -23,3 +23,10 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
 - `patches/0009-sm8850-battery-and-thermal-sensors.patch`
   source: armada
   Original SM8850 battery/thermal adaptation, introduced in this maintenance repo by commit 9a2e8a346f5dd8e11f093fcf95b841f1eb1a8614.
+
+- `patches/0010-msm-global-gpu-metrics.patch`
+  source: armada
+  Use the MSM driver's cumulative whole-GPU busy-time counter, report unavailable
+  counters as N/A, read the highest GPU thermal sensor, and hide absent GPU fans.
+  Requires the matching kernel `gpu_busy_time_ns` ABI. The busy-time percentage
+  measures time executing GPU work, not shader occupancy or peak throughput.
