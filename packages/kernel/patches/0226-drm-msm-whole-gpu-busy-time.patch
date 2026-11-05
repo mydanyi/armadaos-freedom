@@ -1,0 +1,135 @@
+--- a/drivers/gpu/drm/msm/msm_gpu_devfreq.c
++++ b/drivers/gpu/drm/msm/msm_gpu_devfreq.c
+@@ -10,6 +10,7 @@
+ #include <linux/devfreq.h>
+ #include <linux/devfreq_cooling.h>
+ #include <linux/math64.h>
++#include <linux/pm_runtime.h>
+ #include <linux/units.h>
+ 
+ /*
+@@ -136,6 +137,49 @@
+ 	return !!df->devfreq;
+ }
+ 
++/* The caller holds df->lock and the GPU has not been suspended. */
++static void msm_devfreq_monitor_update(struct msm_gpu *gpu)
++{
++	struct msm_gpu_devfreq *df = &gpu->devfreq;
++	unsigned long sample_rate;
++	u64 cycles;
++
++	cycles = gpu->funcs->gpu_busy(gpu, &sample_rate);
++	if (sample_rate && cycles >= df->monitor_busy_cycles)
++		df->monitor_busy_ns += mul_u64_u64_div_u64(
++			cycles - df->monitor_busy_cycles, NSEC_PER_SEC, sample_rate);
++	df->monitor_busy_cycles = cycles;
++}
++
++static ssize_t gpu_busy_time_ns_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct msm_gpu *gpu = dev_to_gpu(dev);
++	struct msm_gpu_devfreq *df = &gpu->devfreq;
++	unsigned long sample_rate;
++	u64 busy_ns;
++	int active;
++
++	/* Hold a runtime PM reference without waking an idle GPU. */
++	active = pm_runtime_get_if_active(dev);
++	mutex_lock(&df->lock);
++	if (!df->monitor_enabled) {
++		df->monitor_enabled = true;
++		if (active > 0 && !df->suspended)
++			df->monitor_busy_cycles = gpu->funcs->gpu_busy(gpu,
++							   &sample_rate);
++	} else if (active > 0 && !df->suspended) {
++		msm_devfreq_monitor_update(gpu);
++	}
++	busy_ns = df->monitor_busy_ns;
++	mutex_unlock(&df->lock);
++	if (active > 0)
++		pm_runtime_put_autosuspend(dev);
++
++	return sysfs_emit(buf, "%llu\n", busy_ns);
++}
++static DEVICE_ATTR_RO(gpu_busy_time_ns);
++
+ void msm_devfreq_init(struct msm_gpu *gpu)
+ {
+ 	struct msm_gpu_devfreq *df = &gpu->devfreq;
+@@ -188,6 +232,11 @@
+ 	}
+ 
+ 	devfreq_suspend_device(df->devfreq);
++
++	ret = device_create_file(&gpu->pdev->dev, &dev_attr_gpu_busy_time_ns);
++	if (ret)
++		DRM_DEV_ERROR(&gpu->pdev->dev,
++				"Couldn't create GPU busy-time attribute: %d\n", ret);
+ 
+ 	gpu->cooling = of_devfreq_cooling_register(gpu->pdev->dev.of_node, df->devfreq);
+ 	if (IS_ERR(gpu->cooling)) {
+@@ -221,6 +270,7 @@
+ 	if (!has_devfreq(gpu))
+ 		return;
+ 
++	device_remove_file(&gpu->pdev->dev, &dev_attr_gpu_busy_time_ns);
+ 	devfreq_cooling_unregister(gpu->cooling);
+ 	dev_pm_qos_remove_request(&df->boost_freq);
+ }
+@@ -235,6 +285,7 @@
+ 
+ 	mutex_lock(&df->lock);
+ 	df->busy_cycles = gpu->funcs->gpu_busy(gpu, &sample_rate);
++	df->monitor_busy_cycles = df->busy_cycles;
+ 	df->time = ktime_get();
+ 	df->suspended = false;
+ 	mutex_unlock(&df->lock);
+@@ -370,6 +421,12 @@
+ 	if (!has_devfreq(gpu))
+ 		return;
+ 
++	/* retire_submit() still holds the active runtime PM reference here. */
++	mutex_lock(&df->lock);
++	if (df->monitor_enabled && !df->suspended)
++		msm_devfreq_monitor_update(gpu);
++	mutex_unlock(&df->lock);
++
+ 	msm_hrtimer_queue_work(&df->idle_work, ms_to_ktime(1),
+ 			       HRTIMER_MODE_REL);
+ }
+--- a/drivers/gpu/drm/msm/msm_gpu.h
++++ b/drivers/gpu/drm/msm/msm_gpu.h
+@@ -148,6 +148,12 @@
+ 	 * cycles since last sampling period.
+ 	 */
+ 	u64 busy_cycles;
++	/** @monitor_busy_cycles: Independent baseline for userspace telemetry. */
++	u64 monitor_busy_cycles;
++	/** @monitor_busy_ns: Cumulative whole-GPU busy time, protected by lock. */
++	u64 monitor_busy_ns;
++	/** @monitor_enabled: Start accounting only after the first sysfs read. */
++	bool monitor_enabled;
+ 	/** @time: Time of last sampling period.  */
+ 	ktime_t time;
+ 	/** @idle_time: Time of last transition to idle.  */
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-driver-msm-gpu
+@@ -0,0 +1,16 @@
++What:           /sys/devices/.../<gpu>/gpu_busy_time_ns
++Date:           October 2026
++Contact:        linux-arm-msm@vger.kernel.org
++Description:
++                Read-only cumulative whole-GPU busy time in nanoseconds,
++                measured using the driver's gpu_busy counter. Includes work
++                from all clients. Accounting starts on the first read. The value
++                remains constant while the GPU
++                is suspended; reads do not wake the device or alter devfreq
++                governor accounting. Runtime resume preserves the cumulative
++                value and rebases the hardware counter. Driver reprobe or
++                reload resets it.
++
++                Divide the change in this value by the corresponding elapsed
++                CLOCK_MONOTONIC time to calculate a busy-time proportion.
++                This is not shader occupancy or a fraction of peak throughput.
