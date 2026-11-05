@@ -1,0 +1,18 @@
+diff --git a/arch/arm64/boot/dts/qcom/kaanapali.dtsi b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+index 38290c9..2b9a153 100644
+--- a/arch/arm64/boot/dts/qcom/kaanapali.dtsi
++++ b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+@@ -3653,9 +3653,11 @@
+ 			mdss_mdp: display-controller@9801000 {
+ 				compatible = "qcom,kaanapali-dpu";
+ 				reg = <0x0 0x09801000 0x0 0x1c8000>,
+-				      <0x0 0x09b16000 0x0 0x3000>;
++				      <0x0 0x09b16000 0x0 0x3000>,
++				      <0x0 0x09b60000 0x0 0x7000>;
+ 				reg-names = "mdp",
+-					    "vbif";
++					    "vbif",
++					    "lutdma";
+ 
+ 				interrupts-extended = <&mdss 0>;
+ 
