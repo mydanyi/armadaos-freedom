@@ -25,7 +25,7 @@ IFACE_CPU = "com.steampowered.SteamOSManager1.CpuScaling1"
 LOGIN1_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_IFACE = "org.freedesktop.login1.Manager"
-PROFILES = ["eco", "balanced", "performance"]
+PROFILES = ["eco", "balanced", "performance", "extreme"]
 STATE_FILE = Path("/var/lib/armada/powerd.state")
 FACTORY_CONFIG_FILE = Path("/usr/share/armada/power-profiles.conf")
 CONFIG_FILE = Path("/etc/armada/power-profiles.conf")
@@ -35,6 +35,31 @@ FAN_SAFE_PWM = 128
 def normalize_profile(profile):
     value = profile.strip().lower()
     return value if value in PROFILES else ""
+
+
+def ensure_extreme_profile(parser):
+    # Old three-profile configs stay valid: synthesize [profile.extreme] from the
+    # effective performance section. An existing extreme section is independent:
+    # only fill missing required fields, never optional per-policy caps.
+    section = "profile.extreme"
+    absent = not parser.has_section(section)
+    if absent:
+        parser.add_section(section)
+        if not parser.has_option(section, "label"):
+            parser.set(section, "label", "Extreme")
+    if parser.has_section("profile.performance"):
+        if absent:
+            source = list(parser.items("profile.performance"))
+        else:
+            source = [(key, parser.get("profile.performance", key))
+                      for key in ("cpu_governor", "cpu_max", "cpu_underclock",
+                                  "gpu_max", "gpu_min", "fan_curve")
+                      if parser.has_option("profile.performance", key)]
+        for key, value in source:
+            if not parser.has_option(section, key):
+                parser.set(section, key, value)
+    if not parser.has_option(section, "label"):
+        parser.set(section, "label", "Extreme")
 
 
 XML = f"""
@@ -306,6 +331,7 @@ class ArmadaPower:
             config_files.append(CONFIG_FILE)
         if not parser.read(config_files):
             raise FileNotFoundError(FACTORY_CONFIG_FILE)
+        ensure_extreme_profile(parser)
         require_section(parser, "general")
         default_profile = parser.get("general", "default_profile").strip().lower()
         if default_profile not in PROFILES:
