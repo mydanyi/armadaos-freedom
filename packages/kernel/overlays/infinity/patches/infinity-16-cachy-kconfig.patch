@@ -1,0 +1,26 @@
+From: h0cheung <hcheunh@gmail.com>
+Subject: [PATCH] sched: expose scoped CachyOS interactivity defaults
+
+Expose only the scheduler defaults imported in this series.
+Infinity supplies its own quantum; unrelated Cachy tuning is absent.
+
+---
+diff --git a/init/Kconfig b/init/Kconfig
+index 96f7e40..5b58785 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1492,6 +1492,14 @@ config SCHED_AUTOGROUP
+ 	  desktop applications.  Task group autogeneration is currently based
+ 	  upon task session.
+ 
++config CACHY
++	bool "CachyOS interactive scheduler defaults"
++	default n
++	help
++	  Use the CachyOS migration cost and migration batch defaults.
++	  This tree uses the option only in the scheduler; it does not enable
++	  unrelated CachyOS kernel tuning. Infinity supplies its own quantum.
++
+ config SCHED_POC_SELECTOR
+ 	bool "Piece-Of-Cake Fast Idle CPU Selector"
+ 	depends on SMP

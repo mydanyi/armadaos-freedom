@@ -1,0 +1,46 @@
+From: h0cheung <hcheunh@gmail.com>
+Subject: [PATCH] infinity: recharge elapsed RR quantum and report its interval
+
+Do not add an already consumed RR remainder to the next quantum.
+At HZ=1000 the old code alternated one- and two-tick slices.
+Report the actual tick-rounded interval for SCHED_RR, while
+SCHED_FIFO continues to return zero.
+
+---
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index 5249a24..5a99457 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -2598,14 +2598,14 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
+ 		struct sched_rt_entity *rt_se = &p->rt;
+ 
+ 		/*
+-		 * Carry remainder into the next quantum (top-up, not full
+-		 * reset). u64-safe: this branch runs only when rem <=
+-		 * TICK_NSEC, so rem + Q_BASE cannot overflow.
++		 * This tick consumed the remaining quantum. Recharge instead
++		 * of adding the already consumed remainder to the next slice.
++		 * The effective quantum is at least one scheduler tick.
+ 		 * Skip forced-tail requeue+resched when sole element on
+ 		 * the queue (mirrors stock prev != next check).
+ 		 */
+ 		rq->rt.inf_expiries++;
+-		p->rt.inf_slice_rem += INFINITY_RT_Q_BASE_NS;
++		p->rt.inf_slice_rem = INFINITY_RT_Q_BASE_NS;
+ 		for_each_sched_rt_entity(rt_se) {
+ 			if (rt_se->run_list.prev != rt_se->run_list.next) {
+ 				requeue_task_rt(rq, p, 0);
+@@ -2619,10 +2619,9 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
+ 
+ static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
+ {
+-	/*
+-	 * Infinity: RR quantum neutered. Zero means infinity per the
+-	 * timespec convention (see sys_sched_rr_get_interval).
+-	 */
++	/* Report the same tick-rounded quantum used by task_tick_rt(). */
++	if (task->policy == SCHED_RR)
++		return DIV_ROUND_UP(INFINITY_RT_Q_BASE_NS, NSEC_PER_SEC / HZ);
+ 	return 0;
+ }
+ 
