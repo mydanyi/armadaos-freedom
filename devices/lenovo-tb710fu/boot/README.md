@@ -2,6 +2,8 @@
 
 适用于 TB710FU / SM8650。kShimC 菜单与原厂 Android 内核、统一 Linux 内核、DTB 和 initramfs 一起打包进 **boot_a**；HyperOS 照常从菜单启动，B 槽不需要改动。设备功能状态见[设备文档](../README.md)。
 
+本页是手动构建、打包 boot 的开发说明。普通安装请用安装器，见设备文档的[安装](../README.md#安装)一节；安装器会自行生成并签名 boot。
+
 ## 前提
 
 - 本机 Bootloader 未解锁。A 槽的 vbmeta 链把 `boot` 交给 AOSP `testkey_rsa4096` 校验（ZUI 495 免解锁补充包的启动链），所以用该测试密钥重新签名的 boot 能通过 ABL 校验，并保持 `verifiedbootstate=green`。其它启动链的机器不适用。
