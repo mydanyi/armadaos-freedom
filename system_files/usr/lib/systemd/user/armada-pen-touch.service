@@ -1,0 +1,15 @@
+[Unit]
+Description=Armada Game Mode pen as touch (gamescope ignores tablet input)
+Documentation=file:/usr/libexec/armada/armada-pen-touch.py
+After=gamescope-session-plus@steam.service
+BindsTo=gamescope-session-plus@steam.service
+PartOf=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecCondition=/usr/bin/python3 /usr/libexec/armada/armada-pen-touch.py --supported
+ExecStart=/usr/bin/python3 /usr/libexec/armada/armada-pen-touch.py
+Restart=on-failure
+RestartSec=2
+RestartSteps=5
+RestartMaxDelaySec=60
