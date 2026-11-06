@@ -53,7 +53,8 @@ contain it.
 ## Firmware it needs at run time — not here
 
 When the sound card binds, the driver requests the amplifier parameter file **`aw882xx_acf.bin`** through
-the firmware loader. It is Lenovo/Awinic tuning data from the tablet's vendor partition, not redistributable,
+the firmware loader. A board can name its own file with the optional DT property `firmware-name` on the
+amplifier nodes (TB710FU: `qcom/sm8650/xiaoxin/gt/aw882xx_acf.bin`); without it the bare name is used. It is Lenovo/Awinic tuning data from the tablet's vendor partition, not redistributable,
 and **not part of this repository**: extract it from your own tablet with
 [`firmware/extract-on-device.sh`](../../../../devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/firmware/extract-on-device.sh) (it lands in `/lib/firmware/aw882xx_acf.bin`). The
 driver also knows calibration (`aw_cali.bin` on Android's persist partition) and per-PID monitor files; they

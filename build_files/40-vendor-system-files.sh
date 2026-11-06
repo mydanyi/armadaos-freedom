@@ -90,6 +90,18 @@ install -Dpm 0644 "${fw_bundle}/qcom/kaanapali/lenovo/baldur/adsp_dtb.mbn" \
 install -Dpm 0644 "${fw_bundle}/aw882xx_acf.bin" "${fw_audio}/aw882xx_acf.bin"
 install -Dpm 0644 "${fw_bundle}/SHA256SUMS" "${fw_audio}/SHA256SUMS"
 
+# TB710FU firmware: every file sits at a path only this board's device tree
+# names (qcom/sm8650/xiaoxin/gt/, novatek/novatek_nt36532_*), so it goes
+# straight into the firmware search root and nothing is staged at run time.
+# The bundle is checked first so a truncated or swapped blob fails the build.
+(
+    cd /ctx/tb710fu-firmware
+    sha256sum -c --strict SHA256SUMS
+    while read -r _ file; do
+        install -Dpm 0644 "${file}" "/usr/lib/firmware/${file}"
+    done < SHA256SUMS
+)
+
 chmod 0755 /usr/libexec/armada/*
 chmod 0755 /usr/libexec/os-session-select
 chmod 0755 /usr/libexec/tb323fu/tb323fu-usb-port
