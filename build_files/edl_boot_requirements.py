@@ -151,11 +151,45 @@ def _validate_boot_requirements(model, boot):
         if fw in validated_sha:
             sha_ordered[fw] = validated_sha[fw]
 
-    return {
+    result = {
         "earlyFirmware": firmware_ordered,
         "earlyDrivers": drivers_ordered,
         "firmwareSha256": sha_ordered,
     }
+
+    if "moduleAliases" in boot:
+        aliases_raw = boot["moduleAliases"]
+        aliases_field = f"{field_prefix}.moduleAliases"
+        if not isinstance(aliases_raw, dict):
+            raise ValueError(f"{aliases_field} must be a JSON object")
+        driver_set = set(drivers_ordered)
+        aliases_ordered = {}
+        for driver_key, alias_list in aliases_raw.items():
+            key_field = f"{aliases_field}[{driver_key!r}]"
+            _plain_text(driver_key, f"{aliases_field} key")
+            if driver_key not in driver_set:
+                raise ValueError(
+                    f"{aliases_field} key {driver_key!r} is not listed in earlyDrivers"
+                )
+            if not isinstance(alias_list, list):
+                raise ValueError(f"{key_field} must be a nonempty JSON list of strings")
+            if not alias_list:
+                raise ValueError(f"{key_field} must be a nonempty JSON list of strings")
+            cleaned = []
+            for index, alias in enumerate(alias_list):
+                alias_field = f"{key_field}[{index}]"
+                _plain_text(alias, alias_field)
+                if any(character.isspace() for character in alias):
+                    raise ValueError(f"{alias_field} must not contain whitespace")
+                if _has_control_characters(alias):
+                    raise ValueError(
+                        f"{alias_field} must not contain control characters"
+                    )
+                cleaned.append(alias)
+            aliases_ordered[driver_key] = cleaned
+        result["moduleAliases"] = aliases_ordered
+
+    return result
 
 
 def load_requirements(configuration, models=None):
@@ -260,6 +294,136 @@ def _modules_builtin_contains(builtin_path, module_name):
     return False
 
 
+def _resolve_module_file(root, kver, module_name):
+    """Return module file name for *module_name* if it is a built-in module
+    according to modules.builtin, else None."""
+    modules_root = Path(root) / "usr" / "lib" / "modules" / kver
+    builtin_path = modules_root / "modules.builtin"
+    if not builtin_path.is_file():
+        return None
+    wanted = _normalize_module_name(module_name)
+    try:
+        with open(builtin_path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                entry = stripped.split()[0]
+                candidate = entry.rsplit("/", 1)[-1]
+                if candidate.endswith(".ko"):
+                    candidate = candidate[:-3]
+                if _normalize_module_name(candidate) == wanted:
+                    return entry
+    except OSError:
+        return None
+    return None
+
+
+def _read_builtin_modinfo(modules_root):
+    path = modules_root / "modules.builtin.modinfo"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    text = data.decode("utf-8", "replace")
+    return [entry for entry in text.split("\x00") if entry]
+
+
+def _module_builtin_aliases(modules_root, module_path):
+    """Return alias strings declared by a built-in module, or None if the
+    modinfo file cannot be read."""
+    entries = _read_builtin_modinfo(modules_root)
+    if entries is None:
+        return None
+    normalized = module_path.removesuffix(".ko") if module_path else module_path
+    basename = normalized.rsplit("/", 1)[-1] if normalized else normalized
+    prefixes = tuple(
+        p + ".alias=" for p in (normalized, basename) if p
+    )
+    aliases = []
+    for entry in entries:
+        for pref in prefixes:
+            if entry.startswith(pref):
+                aliases.append(entry[len(pref):])
+                break
+    return aliases
+
+
+def _alias_matches(declared, requested):
+    if declared == requested:
+        return True
+    if declared == requested + "C*":
+        return True
+    return False
+
+
+def _module_alias_present(root, kver, module_name, alias):
+    """Return (ok, diagnostic) for requested alias mapped to module_name."""
+    modules_root = Path(root) / "usr" / "lib" / "modules" / kver
+    module_path = _resolve_module_file(root, kver, module_name)
+    if module_path is not None:
+        declared = _module_builtin_aliases(modules_root, module_path)
+        if declared is None:
+            return (
+                False,
+                f"modules.builtin.modinfo unreadable for driver {module_name!r} "
+                f"alias {alias!r}",
+            )
+        for declared_alias in declared:
+            if _alias_matches(declared_alias, alias):
+                return True, None
+        return (
+            False,
+            f"driver {module_name!r} is built-in but alias {alias!r} not declared "
+            f"in modules.builtin.modinfo",
+        )
+
+    aliases_path = modules_root / "modules.alias"
+    if not aliases_path.is_file():
+        return (
+            False,
+            f"driver {module_name!r} alias {alias!r} cannot be verified: "
+            f"modules.alias missing under usr/lib/modules/{kver}",
+        )
+    try:
+        text = aliases_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return (
+            False,
+            f"driver {module_name!r} alias {alias!r}: could not read modules.alias: {error}",
+        )
+    wanted = _normalize_module_name(module_name)
+    other_owners = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("alias "):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        declared_alias = parts[1]
+        target = parts[2].rsplit("/", 1)[-1]
+        if target.endswith(".ko"):
+            target = target[:-3]
+        target_norm = _normalize_module_name(target)
+        if _alias_matches(declared_alias, alias):
+            if target_norm == wanted:
+                return True, None
+            other_owners.append(parts[2])
+    if other_owners:
+        detail = ", ".join(sorted(set(other_owners)))
+        return (
+            False,
+            f"driver {module_name!r} alias {alias!r} is declared for {detail}",
+        )
+    return (
+        False,
+        f"driver {module_name!r} alias {alias!r} not found in modules.alias",
+    )
+
+
 def _module_present(root, kver, module_name):
     modules_root = Path(root) / "usr" / "lib" / "modules" / kver
     if modules_root.is_dir():
@@ -316,6 +480,7 @@ def verify_tree(root, kver, requirements):
         firmware = req.get("earlyFirmware", [])
         drivers = req.get("earlyDrivers", [])
         sha_map = req.get("firmwareSha256", {})
+        alias_map = req.get("moduleAliases") or {}
 
         for firmware_path in firmware:
             try:
@@ -354,6 +519,19 @@ def verify_tree(root, kver, requirements):
                 errors.append(
                     f"{model}: driver {module_name!r} missing under usr/lib/modules/{kver}"
                 )
+                continue
+            for alias in alias_map.get(module_name, []):
+                try:
+                    ok, detail = _module_alias_present(
+                        root_path, kver, module_name, alias
+                    )
+                except OSError as error:
+                    ok = False
+                    detail = str(error)
+                if not ok:
+                    errors.append(
+                        f"{model}: driver {module_name!r} alias {alias!r}: {detail}"
+                    )
 
     if errors:
         raise ValueError("; ".join(errors))

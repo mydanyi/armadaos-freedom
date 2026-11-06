@@ -56,6 +56,11 @@ TB322FC_PROFILE = {
             "qcom/gen80000_aqe.fw",
             "qcom/sm8750/lenovo/elden/gen80000_zap.mbn",
             "novatek_ts_csot_3k_fw.bin",
+            "qca/brhbtfw20.tlv",
+            "qca/lenovo/tb322fc/brhbtnv20.bin",
+            "qca/brhperifw20.tlv",
+            "qca/brhperinv20.bin",
+            "qca/tmel_peach_20.elf",
         ],
         "earlyDrivers": [
             "qcom_pil_info",
@@ -64,8 +69,21 @@ TB322FC_PROFILE = {
             "qcom_q6v5",
             "qcom_q6v5_pas",
             "novatek-nvt36xxx-spi",
+            "hci_uart",
+            "btqca",
         ],
-        "firmwareSha256": {},
+        "firmwareSha256": {
+            "qca/brhbtfw20.tlv": "837aea39d33e95a4ba272ef2a2306e5ecf9848853332d2f7b8002901d6af771d",
+            "qca/lenovo/tb322fc/brhbtnv20.bin": "f91354b0872f1f7680142df6852b2c8e67e3151ee2ad406b3d183a2fb539702e",
+            "qca/brhperifw20.tlv": "9a8de09a127a5943f8c23d4ee6005531b900f085740a292c9ab5a20e76db6cb5",
+            "qca/brhperinv20.bin": "3c73215352ba6422a9f2639124d27f64ec83a4d2aa91b388439ca88ea31098d0",
+            "qca/tmel_peach_20.elf": "a175c8d9d0e6b38b5ae23ff0175da795b14b8268919463d2b6e1cb2bfeebc9f8",
+        },
+        "moduleAliases": {
+            "hci_uart": [
+                "of:N*T*Cqcom,wcn7861-bt",
+            ],
+        },
     },
 }
 

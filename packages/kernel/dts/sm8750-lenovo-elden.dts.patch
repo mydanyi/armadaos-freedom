@@ -75,3 +75,20 @@ diff --git a/arch/arm64/boot/dts/qcom/sm8750-lenovo-elden.dts b/arch/arm64/boot/
  	/delete-property/ iommus;
  	status = "okay";
  };
+@@ -2371,13 +2349,12 @@
+ 
+ 	status = "okay";
+ 
+-	/* WCN7861 Peach/Brahma v2 uses the WCN7850 UART protocol. */
++	/* WCN7861 Peach/Brahma v2. */
+ 	bluetooth {
+ 		compatible = "qcom,wcn7861-bt";
+ 
+-		firmware-name = "brhbtnv20.bin", "brhbtfw20.tlv";
+-		/* Android-assigned public address, stored little-endian in DT. */
+-		local-bd-address = [58 97 9c 62 22 22];
++		/* Keep the TB322FC NVM separate from other boards. */
++		firmware-name = "lenovo/tb322fc/brhbtnv20.bin", "brhbtfw20.tlv";
+ 
+ 		vddrfacmn-supply = <&vreg_wlan_pmu_rfa_cmn>;
+ 		vddaon-supply = <&vreg_wlan_pmu_aon_0p59>;
