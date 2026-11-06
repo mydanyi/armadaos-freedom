@@ -130,9 +130,9 @@ $ just build-edl-package-local ORIGIN [IMAGE] [TAG]
 - `rd-break` 在 normal 启动参数后追加 `rd.break=pre-mount`。
 - `verbose` 去掉 `quiet`、所有 `loglevel=` 开关以及所有 `rd.break` 变体，保留其余 normal 参数（含机型额外参数），并确保存在 `loglevel=8 ignore_loglevel printk.time=1 initcall_debug rd.debug`，缺失的参数按此顺序追加。其输出不含 `rd.break`。
 
-四代机型（TB322FC）使用 `rd-break`；五代机型（TB323FU）使用 `verbose`，其机型参数通过 `extraArgs` 提供。
+四代机型（TB322FC）使用 `rd-break`；五代机型（TB323FU）使用 `verbose`，其机型参数通过 `extraArgs` 提供。小新 Pad Pro GT（TB710FU）使用 `rd-break`，并通过 `extraArgs` 传入 `clk_ignore_unused pd_ignore_unused regulator_ignore_unused`：Linux 因此不会关闭引导程序留下的时钟、电源域和稳压器，包括它仍在扫描输出的显示所用的那些。
 
-`runtimeCmakeArgs` 是按机型配置的源码选项。五代配置传入 `-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=ON`，在交接时把原 Android 触摸控制器限制为 4.8 MHz；四代配置传入 `OFF`，CMake 默认值也是 `OFF`。
+`runtimeCmakeArgs` 是按机型配置的源码选项。五代配置传入 `-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=ON`，在交接时把原 Android 触摸控制器限制为 4.8 MHz；四代和 TB710FU 配置传入 `OFF`，CMake 默认值也是 `OFF`。
 
 ## 使用 Windows 安装器刷写
 
