@@ -225,6 +225,7 @@ build $target_image=image_name $tag=default_tag:
     [ "${expected}" -eq "${got}" ] || { echo "Containerfile wants ${expected} refs, resolved ${got}" >&2; exit 1; }
 
     ARMADA_VERSION="$(TZ=America/New_York date +%Y%m%d).$(git rev-parse --short HEAD)"
+    ARMADA_REVISION="$(git rev-parse HEAD)"
 
     SECRET_ARGS=()
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -233,6 +234,7 @@ build $target_image=image_name $tag=default_tag:
 
     podman build \
         --build-arg "ARMADA_VERSION=${ARMADA_VERSION}" \
+        --build-arg "ARMADA_REVISION=${ARMADA_REVISION}" \
         --build-arg-file "${REFS}" \
         "${SECRET_ARGS[@]}" \
         --platform linux/arm64 \
@@ -373,10 +375,11 @@ build-armada-image $target_image=("localhost/" + image_name) $tag=default_tag: (
     fi
     ./post_process/finalize-armada-image.sh output/image/disk.raw
 
-# Build the 9008/EDL package from IMAGE (OCI ref with channel), DIGEST,
-# REVISION and VERSION. Output: ./output/edl/<version>/
+# Build the 9008/EDL package from IMAGE (OCI ref with channel, or an absolute
+# OCI layout directory), DIGEST, REVISION and VERSION; ORIGIN is required for a
+# layout directory. Output: ./output/edl/<version>/
 [group('Armada')]
-build-edl-package $image $digest $revision $version:
+build-edl-package $image $digest $revision $version $origin="":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -393,9 +396,38 @@ build-edl-package $image $digest $revision $version:
         --manifest-digest "${digest}" \
         --source-commit "${revision}" \
         --version "${version}" \
+        ${origin:+--origin "${origin}"} \
         --source "${source}" \
         --work "${build_parent}/work" \
         --output "${output}"
+
+# Build the 9008/EDL package from a locally built image (just build), using the
+# image's own version and revision labels. ORIGIN is the signed origin the
+# devices update from (ostree-image-signed:docker://ghcr.io/mydanyi/
+# armadaos-freedom:stable|beta|testing). Output: ./output/edl/<version>/
+[group('Armada')]
+build-edl-package-local $origin $target_image=("localhost/" + image_name) $tag=default_tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    source="$(git rev-parse --show-toplevel)"
+    command -v skopeo >/dev/null || { echo "skopeo is required to export the local image" >&2; exit 1; }
+    ref="containers-storage:${target_image}:${tag}"
+    # Check the labels before exporting the image.
+    version="$(skopeo inspect --format '{{{{ index .Labels "org.opencontainers.image.version" }}' "${ref}")"
+    revision="$(skopeo inspect --format '{{{{ index .Labels "org.opencontainers.image.revision" }}' "${ref}")"
+    if [[ -z "${version}" || "${version}" == unknown || "${version}" == "<no value>" || ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "${target_image}:${tag} has no version/revision labels (version '${version}', revision '${revision}'); rebuild it with 'just build'" >&2
+        exit 1
+    fi
+    # The OCI copy is several GB; it is only needed while the package is built.
+    oci_parent="$(mktemp -d "${source}/_build-edl-oci.XXXXXX")"
+    trap 'rm -rf "${oci_parent}"' EXIT
+    oci="${oci_parent}/oci"
+    # The producer reads the image as oci:<dir>:latest.
+    skopeo copy "${ref}" "oci:${oci}:latest"
+    digest="$(skopeo inspect --format '{{{{ .Digest }}' "oci:${oci}:latest")"
+    just build-edl-package "${oci}" "${digest}" "${revision}" "${version}" "${origin}"
 
 [group('Build Virtual Machine Image')]
 rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")
