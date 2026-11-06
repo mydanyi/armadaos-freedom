@@ -30,3 +30,8 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   counters as N/A, read the highest GPU thermal sensor, and hide absent GPU fans.
   Requires the matching kernel `gpu_busy_time_ns` ABI. The busy-time percentage
   measures time executing GPU work, not shader occupancy or peak throughput.
+
+- `patches/0011-battery-percent-prefer-capacity.patch`
+  source: armada
+  Prefer the kernel capacity reading on single-battery systems and bound raw
+  fallback percentages. Keep the existing multi-battery aggregation path.
