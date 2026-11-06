@@ -33,6 +33,14 @@ enabled() {
     supported && switched_on
 }
 
+# Stable device serial derived from the machine id, same convention as mtp-gadget.
+serial_number() {
+    local id
+    id="$(systemd-id128 machine-id -a c130694e253a463d92175e45a1be98de 2>/dev/null)" || return 1
+    [[ -n "$id" ]] || return 1
+    printf '%s' "$id"
+}
+
 stopping() {
     local state
     state="$(systemctl is-system-running 2>/dev/null || true)"
@@ -80,9 +88,15 @@ start() {
     printf '0x1d6b' > "$gadget/idVendor"
     printf '0x0104' > "$gadget/idProduct"
     printf '0x0200' > "$gadget/bcdUSB"
+    local serial
+    serial="$(serial_number)" || { printf 'armada-usb-network: cannot derive serial number\n' >&2; teardown; exit 1; }
     mkdir "$gadget/strings/0x409"
     printf 'Armada' > "$gadget/strings/0x409/manufacturer"
     printf 'Armada USB network' > "$gadget/strings/0x409/product"
+    printf '%s' "$serial" > "$gadget/strings/0x409/serialnumber"
+    printf '0xEF' > "$gadget/bDeviceClass"
+    printf '0x02' > "$gadget/bDeviceSubClass"
+    printf '0x01' > "$gadget/bDeviceProtocol"
     mkdir "$config" "$config/strings/0x409"
     printf 'NCM' > "$config/strings/0x409/configuration"
     mkdir "$gadget/functions/$function_name"
@@ -91,12 +105,17 @@ start() {
 }
 
 # Adds the network function to another gadget's c.1 before that gadget is bound.
+# Switches the combined device to the IAD triplet so Windows binds UsbNcm; skipped
+# when the link is disabled so a MTP-only gadget keeps its identity.
 attach() {
     local other=$1
     enabled || return 0
     mkdir -p "$other/functions/$function_name"
     [[ -L "$other/configs/c.1/$function_name" ]] \
         || ln -s "$other/functions/$function_name" "$other/configs/c.1/$function_name"
+    printf '0xEF' > "$other/bDeviceClass"
+    printf '0x02' > "$other/bDeviceSubClass"
+    printf '0x01' > "$other/bDeviceProtocol"
 }
 
 # Removes it again after the other gadget is unbound, so its teardown can remove c.1.
@@ -110,6 +129,7 @@ detach() {
 resume() {
     enabled || return 0
     stopping && return 0
+    systemctl reset-failed armada-usb-network.service
     systemctl --no-block start armada-usb-network.service
 }
 
@@ -132,6 +152,9 @@ set_switch() {
 
     local mtp=0
     systemctl is-active --quiet armada-mtp.service && mtp=1
+    if ((mtp)); then
+        systemctl reset-failed armada-mtp.service
+    fi
     if [[ "$value" == 0 ]]; then
         systemctl stop armada-usb-ssh.socket armada-usb-network.service
         ((mtp)) && systemctl restart armada-mtp.service
@@ -142,6 +165,7 @@ set_switch() {
         systemctl restart armada-mtp.service
         ssh_resume
     else
+        systemctl reset-failed armada-usb-network.service
         systemctl start armada-usb-network.service
     fi
 }

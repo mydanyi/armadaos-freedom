@@ -5,6 +5,7 @@
 [Unit]
 Description=Armada SSH over the USB network link
 Conflicts=sshd.service
+Before=sshd.service
 
 [Socket]
 ListenStream=172.16.42.1:22

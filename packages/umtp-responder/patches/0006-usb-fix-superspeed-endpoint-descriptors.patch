@@ -1,0 +1,17 @@
+diff --git a/src/usb_gadget.c b/src/usb_gadget.c
+index 74d9d2a..6d06dc1 100644
+--- a/src/usb_gadget.c
++++ b/src/usb_gadget.c
+@@ -251,6 +251,12 @@ void fill_ep_descriptor(mtp_ctx * ctx, usb_gadget * usbctx,struct usb_endpoint_d
+ 
+ 		ss_descriptor->ep_desc_comp.bLength = sizeof(struct usb_ss_ep_comp_descriptor);
+ 		ss_descriptor->ep_desc_comp.bDescriptorType = USB_DT_SS_ENDPOINT_COMP;
++
++		if(!(flags & EP_BULK_MODE))
++		{
++			// Interrupt endpoint: wBytesPerInterval (LE) must equal wMaxPacketSize.
++			ss_descriptor->ep_desc_comp.wBytesPerInterval = desc->wMaxPacketSize;
++		}
+ 	}
+ #endif
+ 

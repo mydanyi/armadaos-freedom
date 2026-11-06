@@ -14,3 +14,5 @@ to a commit, or `armada` if it is original; a URL source with no `notes` is verb
   source: armada
 - `patches/0005-inotify-synchronize-session-database-lifetime.patch`
   source: armada
+- `patches/0006-usb-fix-superspeed-endpoint-descriptors.patch`
+  source: armada
