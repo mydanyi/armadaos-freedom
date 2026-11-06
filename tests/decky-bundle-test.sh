@@ -3,9 +3,9 @@
 # curl and systemctl are stubbed; a rewritten copy of the production script
 # points its hard-coded image paths at a per-case sandbox.
 #
-# Decky platform policy is preview: the newest non-draft prerelease. Production
-# must query the exact release-list endpoint below and must never call
-# /releases/latest.
+# Decky platform policy is preview: the newest non-draft prerelease, taken from
+# prefetched release metadata when supplied and otherwise fetched from the exact
+# release-list endpoint. /releases/latest is never used.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,6 +34,7 @@ sed \
     -e "s|/usr/share/decky-loader|$FAKE/usr/share/decky-loader|g" \
     -e "s|/usr/lib/decky-loader/armada-decky-sync|$FAKE/usr/lib/decky-loader/armada-decky-sync|g" \
     -e "s|/etc/systemd/system/plugin_loader.service|$FAKE/etc/systemd/system/plugin_loader.service|g" \
+    -e "s|/run/secrets/decky_releases|$FAKE/run/secrets/decky_releases|g" \
     "$SRC" >"$WORK/build-under-test.sh"
 chmod +x "$WORK/build-under-test.sh"
 
@@ -248,6 +249,23 @@ assert_preview_release_list() {
     fi
 }
 
+assert_no_release_api() {
+    if grep -qF 'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/' "$CURL_LOG"; then
+        case_fail "used the release API despite a prefetched release list"
+    fi
+}
+
+install_prefetched_releases() {
+    local source=$1
+    mkdir -p "$FAKE/run/secrets"
+    case "$source" in
+        prefetch) cp -- "$FIXTURES/$CASE/releases.json" "$FAKE/run/secrets/decky_releases" ;;
+        prefetch-empty) : >"$FAKE/run/secrets/decky_releases" ;;
+        prefetch-malformed) printf 'not a release list' >"$FAKE/run/secrets/decky_releases" ;;
+        *) case_fail "unknown prefetch source $source" ;;
+    esac
+}
+
 setup_case() {
     CASE=$1
     CASE_FAILED=0
@@ -298,8 +316,12 @@ run_bundle() {
 }
 
 success_case() {
-    setup_case success
-    make_fixtures "$FIXTURES/success" success
+    local name=${1:-success} source=${2:-api}
+    setup_case "$name"
+    make_fixtures "$FIXTURES/$name" success
+    if [[ "$source" != api ]]; then
+        install_prefetched_releases "$source"
+    fi
 
     local rc=0
     run_bundle || rc=$?
@@ -309,12 +331,16 @@ success_case() {
         return
     fi
 
-    assert_preview_release_list
+    if [[ "$source" == api ]]; then
+        assert_preview_release_list
+    else
+        assert_no_release_api
+    fi
 
     local loader="$FAKE/usr/share/decky-loader/PluginLoader"
     local version_file="$FAKE/usr/share/decky-loader/.loader.version"
     assert_exists "$loader"
-    if [[ -f "$loader" ]] && ! cmp -s "$FIXTURES/success/arm64.bin" "$loader"; then
+    if [[ -f "$loader" ]] && ! cmp -s "$FIXTURES/$name/arm64.bin" "$loader"; then
         case_fail "installed loader is not the PluginLoader-arm64 asset"
     fi
 
@@ -395,9 +421,12 @@ success_case() {
 }
 
 refusal_case() {
-    local name=$1 mode=$1
+    local name=$1 mode=${2:-$1} source=${3:-api}
     setup_case "$name"
     make_fixtures "$FIXTURES/$name" "$mode"
+    if [[ "$source" != api ]]; then
+        install_prefetched_releases "$source"
+    fi
 
     local rc=0
     run_bundle || rc=$?
@@ -406,13 +435,24 @@ refusal_case() {
         tail -n 20 "$WORK/$CASE.log" >&2 || true
     fi
 
-    assert_preview_release_list
+    if [[ "$source" == api ]]; then
+        assert_preview_release_list
+    else
+        assert_no_release_api
+        case "$source" in
+            prefetch-empty | prefetch-malformed)
+                if grep -qE '/releases/download/|/PluginLoader(-arm64)?$|plugin_loader-(release|prerelease)[.]service' "$CURL_LOG"; then
+                    case_fail "attempted downloads after an invalid prefetched release list"
+                fi
+                ;;
+        esac
+    fi
     assert_absent "$FAKE/usr/share/decky-loader/.loader.version"
     if [[ -s "$SYSTEMCTL_LOG" ]]; then
         case_fail "enabled services after refusing the release"
     fi
 
-    case "$name" in
+    case "$mode" in
         missing-arm64)
             if grep -qE '/PluginLoader$' "$CURL_LOG"; then
                 case_fail "fell back to the x86 PluginLoader asset"
@@ -472,10 +512,15 @@ sed 's#${HOMEBREW_FOLDER}#/var/home/armada/homebrew#g' \
     "$FIXTURES/_expected/service-prerelease.txt" >"$WORK/service.expected"
 
 run_case success success_case
+run_case prefetched-success success_case prefetched-success prefetch
 run_case missing-arm64 refusal_case missing-arm64
 run_case digest-mismatch refusal_case digest-mismatch
 run_case wrong-arch refusal_case wrong-arch
 run_case no-preview refusal_case no-preview
+run_case prefetched-empty refusal_case prefetched-empty success prefetch-empty
+run_case prefetched-malformed refusal_case prefetched-malformed success prefetch-malformed
+run_case prefetched-digest-mismatch refusal_case prefetched-digest-mismatch digest-mismatch prefetch
+run_case prefetched-wrong-arch refusal_case prefetched-wrong-arch wrong-arch prefetch
 
 if [[ $FAILED -ne 0 ]]; then
     printf '\n%d case(s) failed\n' "$FAILED" >&2
