@@ -30,3 +30,8 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   counters as N/A, read the highest GPU thermal sensor, and hide absent GPU fans.
   Requires the matching kernel `gpu_busy_time_ns` ABI. The busy-time percentage
   measures time executing GPU work, not shader occupancy or peak throughput.
+
+- `patches/0012-msm-hide-unavailable-power-voltage.patch`
+  source: armada
+  Hide MSM DPU GPU power and voltage fields when their hwmon sources are absent.
+  Preserve the existing display behavior of other GPU backends.
