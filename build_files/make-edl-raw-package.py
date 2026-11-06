@@ -840,6 +840,21 @@ def _verify_plasma_packages(deployment):
     module.verify_packages(Path(deployment))
 
 
+def _verify_model_boot_requirements(deployment, initrd, configuration, models, work):
+    helper_path = Path(__file__).resolve().with_name("edl_boot_requirements.py")
+    module = _load_module('edl_boot_requirements_sibling', helper_path)
+    modules_dir = Path(deployment) / "usr/lib/modules"
+    kvers = [path for path in modules_dir.iterdir() if path.is_dir()] if modules_dir.is_dir() else []
+    if len(kvers) != 1:
+        raise ValueError(
+            f"expected exactly one kernel version under {modules_dir}, found {len(kvers)}"
+        )
+    kver = kvers[0].name
+    req = module.load_requirements(configuration, models)
+    module.verify_tree(deployment, kver, req)
+    module.verify_initramfs(initrd, kver, req, work_parent=work)
+
+
 def _write_deployment_markers(target, deployment, build):
     etc = Path(deployment) / "etc"
     marker = {
@@ -1035,6 +1050,13 @@ def _produce(args):
         deployment = _selected_deployment(target, result["deployment_checksum"])
         _verify_frozen_overlay(source, deployment)
         _verify_plasma_packages(deployment)
+        _verify_model_boot_requirements(
+            deployment,
+            target / "boot" / result["initrd"],
+            configuration,
+            models,
+            work,
+        )
         _write_deployment_markers(target, deployment, build)
         _copy_payload(
             target / "boot" / result["image"],
