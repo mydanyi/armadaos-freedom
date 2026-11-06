@@ -35,3 +35,8 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   source: armada
   Prefer the kernel capacity reading on single-battery systems and bound raw
   fallback percentages. Keep the existing multi-battery aggregation path.
+
+- `patches/0012-msm-hide-unavailable-power-voltage.patch`
+  source: armada
+  Hide MSM DPU GPU power and voltage fields when their hwmon sources are absent.
+  Preserve the existing display behavior of other GPU backends.
