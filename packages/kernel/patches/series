@@ -316,6 +316,8 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0222-arm64-dts-qcom-kaanapali-describe-ufs-mcq.patch
 0223-Bluetooth-qca-baldur-preserve-configured-address.patch
 0224-drm-msm-dpu-sm8850-inline-rotation.patch
+0225-drm-msm-sm8850-output-lut.patch
+0226-drm-msm-whole-gpu-busy-time.patch
 
 # ============== SM8650 Lenovo Xiaoxin Pad Pro GT (TB710FU) ==============
 # Authored against the full Armada set above, so this section follows all of it.

@@ -1,0 +1,337 @@
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h b/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
+index 3c25771..8ab1fe5 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
+@@ -195,19 +195,19 @@ static const struct dpu_dspp_cfg kaanapali_dspp[] = {
+ 	{
+ 		.name = "dspp_0", .id = DSPP_0,
+ 		.base = 0x105000, .len = 0x1800,
+-		.sblk = &sm8750_dspp_sblk,
++		.sblk = &kaanapali_dspp_sblk,
+ 	}, {
+ 		.name = "dspp_1", .id = DSPP_1,
+ 		.base = 0x10d000, .len = 0x1800,
+-		.sblk = &sm8750_dspp_sblk,
++		.sblk = &kaanapali_dspp_sblk,
+ 	}, {
+ 		.name = "dspp_2", .id = DSPP_2,
+ 		.base = 0x115000, .len = 0x1800,
+-		.sblk = &sm8750_dspp_sblk,
++		.sblk = &kaanapali_dspp_sblk,
+ 	}, {
+ 		.name = "dspp_3", .id = DSPP_3,
+ 		.base = 0x11d000, .len = 0x1800,
+-		.sblk = &sm8750_dspp_sblk,
++		.sblk = &kaanapali_dspp_sblk,
+ 	},
+ };
+ 
+@@ -492,6 +492,7 @@ const struct dpu_mdss_cfg dpu_kaanapali_cfg = {
+ 	.intf_count = ARRAY_SIZE(kaanapali_intf),
+ 	.intf = kaanapali_intf,
+ 	.vbif = &sm8650_vbif,
++	.reg_dma = &kaanapali_reg_dma,
+ 	.perf = &kaanapali_perf_data,
+ };
+ 
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_catalog.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_catalog.c
+index 5dabb16..56d0658 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_catalog.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_catalog.c
+@@ -491,6 +491,12 @@ static const struct dpu_reg_dma_cfg sm8650_reg_dma = {
+ 	.version = 0x30000,
+ };
+ 
++static const struct dpu_reg_dma_cfg kaanapali_reg_dma = {
++	.base = 0x360000, .len = 0x7000,
++	.db_off = 0x0, .sb_off = 0x800,
++	.version = 0x40000,
++};
++
+ /* GC v2 on this DSPP is a LUT bus block too and is not wired up yet */
+ static const struct dpu_dspp_sub_blks sm8750_dspp_sblk = {
+ 	.pcc = {.name = "pcc", .base = 0x1700,
+@@ -501,6 +507,15 @@ static const struct dpu_dspp_sub_blks sm8750_dspp_sblk = {
+ 		.len = 0x1c, .version = 0x40003},
+ };
+ 
++static const struct dpu_dspp_sub_blks kaanapali_dspp_sblk = {
++	.pcc = {.name = "pcc", .base = 0x1700,
++		.len = 0x90, .version = 0x60000},
++	.igc = {.name = "igc", .base = 0x1260,
++		.len = 0x1c, .version = 0x50001},
++	.gamut = {.name = "gamut", .base = 0x1000,
++		.len = 0x1c, .version = 0x40003},
++};
++
+ /*************************************************************
+  * PINGPONG sub blocks config
+  *************************************************************/
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dspp.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dspp.c
+index b06da76..85e6907 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dspp.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dspp.c
+@@ -116,10 +116,12 @@ static void dpu_setup_dspp_gc(struct dpu_hw_dspp *ctx,
+ }
+ 
+ /*
+- * DSPP_IGC (v4, v5): opcode register at +0x4, enable bit 8. The table
++ * DSPP_IGC (v4, v5, v5.1): opcode register at +0x4, enable bit 8. The table
+  * travels over the LUT bus as 257 samples at i / 256 of three 16-bit values
+- * in G, B, R order (the block's c0, c1, c2); v4 takes 12 bits MSB aligned,
+- * v5 all 16. The order is hardware-measured.
++ * in the block's c0, c1, c2; v4 takes 12 bits MSB aligned, v5 and v5.1 all
++ * 16. The G, B, R order used for v4 and v5 is hardware-measured. v5.1 streams
++ * R, G, B to match the vendor's c2, c0, c1 write order; that order is not yet
++ * hardware-validated here.
+  */
+ #define IGC_OPCODE_OFF		0x4
+ #define IGC_EN			BIT(8)
+@@ -153,6 +155,7 @@ static int dpu_setup_dspp_igc(struct dpu_hw_dspp *ctx, const struct drm_color_lu
+ 	struct dpu_reg_dma_buf *buf = &ctx->igc_buf;
+ 	u32 base = ctx->cap->sblk->igc.base;
+ 	u16 mask = ctx->cap->sblk->igc.version >= 0x50000 ? 0xffff : IGC_V4_MASK;
++	bool rgb = ctx->cap->sblk->igc.version == 0x50001;
+ 	__le16 *data;
+ 	int i, j, ret;
+ 
+@@ -176,10 +179,11 @@ static int dpu_setup_dspp_igc(struct dpu_hw_dspp *ctx, const struct drm_color_lu
+ 	if (!data)
+ 		return -ENOSPC;
+ 
++	/* v5.1 follows the vendor's c2, c0, c1 order: R, G, B. */
+ 	for (i = 0, j = 0; i < IGC_SAMPLES; i++) {
+-		data[j++] = cpu_to_le16(igc_sample(lut, i, 1) & mask);
+-		data[j++] = cpu_to_le16(igc_sample(lut, i, 2) & mask);
+-		data[j++] = cpu_to_le16(igc_sample(lut, i, 0) & mask);
++		data[j++] = cpu_to_le16(igc_sample(lut, i, rgb ? 0 : 1) & mask);
++		data[j++] = cpu_to_le16(igc_sample(lut, i, rgb ? 1 : 2) & mask);
++		data[j++] = cpu_to_le16(igc_sample(lut, i, rgb ? 2 : 0) & mask);
+ 	}
+ 
+ 	ret = dpu_reg_dma_single_write(buf, base + IGC_OPCODE_OFF, IGC_EN);
+@@ -246,7 +250,9 @@ int dpu_hw_dspp_set_reg_dma(struct dpu_hw_dspp *ctx, struct dpu_reg_dma *reg_dma
+ 
+ 	/* only the block revisions whose LUT bus format is known */
+ 	if (ctx->cap->sblk->igc.base &&
+-	    (ctx->cap->sblk->igc.version == 0x40000 || ctx->cap->sblk->igc.version == 0x50000)) {
++	    (ctx->cap->sblk->igc.version == 0x40000 ||
++	     ctx->cap->sblk->igc.version == 0x50000 ||
++	     ctx->cap->sblk->igc.version == 0x50001)) {
+ 		ret = dpu_reg_dma_buf_alloc(reg_dma, &ctx->igc_buf, IGC_BUF_SIZE);
+ 		if (ret)
+ 			return ret;
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.c
+index 982722e..c10152c 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.c
+@@ -25,7 +25,6 @@
+ #define CMD_LAST			BIT(24)
+ 
+ #define REG_DMA_OPMODE			0x4
+-#define CTL_REG_DMA_TRIGGER		0xd4
+ #define REG_DMA_ERROR_CLEAR_MASK	(BIT(0) | BIT(1) | BIT(2) | BIT(16) | \
+ 					 BIT(17) | BIT(18) | BIT(19))
+ 
+@@ -40,14 +39,16 @@
+  */
+ struct dpu_reg_dma_layout {
+ 	u32 decode_sel;
+-	u32 intr4_status;
+-	u32 intr4_clear;
++	u32 trigger_off;
+ 	u32 (*queue0)(int ctl_idx);
+ 	u32 (*queue1)(int ctl_idx);
+ 	u32 (*intr_status)(int ctl_idx);
+ 	u32 (*intr_clear)(int ctl_idx);
+ 	u32 (*done_mask)(int ctl_idx);
+ 	u32 (*db_done_mask)(int ctl_idx);
++	u32 (*error_status)(int ctl_idx);
++	u32 (*error_clear)(int ctl_idx);
++	u32 (*trigger_mask)(int ctl_idx);
+ };
+ 
+ static const u32 v2_done_mask[CTL_MAX] = {
+@@ -66,17 +67,22 @@ static u32 v2_intr_status(int ctl_idx) { return 0x160; }
+ static u32 v2_intr_clear(int ctl_idx) { return 0x1a0; }
+ static u32 v2_done(int ctl_idx) { return v2_done_mask[ctl_idx]; }
+ static u32 v2_db_done(int ctl_idx) { return v2_db_done_mask[ctl_idx]; }
++static u32 fixed_error_status(int ctl_idx) { return 0x170; }
++static u32 fixed_error_clear(int ctl_idx) { return 0x1b0; }
++static u32 fixed_trigger_mask(int ctl_idx) { return BIT(0); }
+ 
+ static const struct dpu_reg_dma_layout dpu_reg_dma_v2 = {
+ 	.decode_sel = 0x180ac114,
+-	.intr4_status = 0x170,
+-	.intr4_clear = 0x1b0,
++	.trigger_off = 0xd4,
+ 	.queue0 = v2_queue0,
+ 	.queue1 = v2_queue1,
+ 	.intr_status = v2_intr_status,
+ 	.intr_clear = v2_intr_clear,
+ 	.done_mask = v2_done,
+ 	.db_done_mask = v2_db_done,
++	.error_status = fixed_error_status,
++	.error_clear = fixed_error_clear,
++	.trigger_mask = fixed_trigger_mask,
+ };
+ 
+ /*
+@@ -92,14 +98,43 @@ static u32 v3_db_done(int ctl_idx) { return BIT(3); }
+ 
+ static const struct dpu_reg_dma_layout dpu_reg_dma_v3 = {
+ 	.decode_sel = 0x18180114,
+-	.intr4_status = 0x170,
+-	.intr4_clear = 0x1b0,
++	.trigger_off = 0xd4,
+ 	.queue0 = v3_queue0,
+ 	.queue1 = v3_queue1,
+ 	.intr_status = v3_intr_status,
+ 	.intr_clear = v3_intr_clear,
+ 	.done_mask = v3_done,
+ 	.db_done_mask = v3_db_done,
++	.error_status = fixed_error_status,
++	.error_clear = fixed_error_clear,
++	.trigger_mask = fixed_trigger_mask,
++};
++
++/*
++ * v4: DB and SB both consume the queue at the per-CTL window base and
++ * report the same done bit. Error status moved from the global register
++ * to a per-CTL one.
++ */
++static u32 v4_queue0(int ctl_idx) { return 0x1000 * ctl_idx; }
++static u32 v4_queue1(int ctl_idx) { return v4_queue0(ctl_idx); }
++static u32 v4_error_status(int ctl_idx) { return 0x1000 * ctl_idx + 0x60; }
++static u32 v4_error_clear(int ctl_idx) { return 0x1000 * ctl_idx + 0x5c; }
++static u32 v4_done(int ctl_idx) { return BIT(3); }
++static u32 v4_db_done(int ctl_idx) { return BIT(3); }
++static u32 v4_trigger_mask(int ctl_idx) { return BIT(ctl_idx - CTL_0); }
++
++static const struct dpu_reg_dma_layout dpu_reg_dma_v4 = {
++	.decode_sel = 0x18360114,
++	.trigger_off = 0x900,
++	.queue0 = v4_queue0,
++	.queue1 = v4_queue1,
++	.intr_status = v3_intr_status,
++	.intr_clear = v3_intr_clear,
++	.done_mask = v4_done,
++	.db_done_mask = v4_db_done,
++	.error_status = v4_error_status,
++	.error_clear = v4_error_clear,
++	.trigger_mask = v4_trigger_mask,
+ };
+ 
+ int dpu_reg_dma_buf_alloc(struct dpu_reg_dma *dma, struct dpu_reg_dma_buf *buf, u32 size)
+@@ -237,17 +272,39 @@ void *dpu_reg_dma_lut_reserve(struct dpu_reg_dma_buf *buf, u32 block_sel, u32 tr
+ 	return &loc[2];
+ }
+ 
+-/* the v3 layout maps one window per CTL and the catalog length bounds them */
++/*
++ * cfg offsets are relative to the engine base, so a window length is what
++ * remains after its offset. An offset at or past the end maps no registers.
++ */
++static bool dpu_reg_dma_window_has(u32 len, u32 off, u32 reg, u32 size)
++{
++	if (off >= len)
++		return false;
++	len -= off;
++	return reg <= len && size <= len - reg;
++}
++
++/* every version-specific access must fit the window it is issued through */
+ bool dpu_reg_dma_ctl_valid(struct dpu_reg_dma *dma, int ctl_idx)
+ {
+ 	const struct dpu_reg_dma_layout *l = dma->layout;
+-	u32 sb_len = dma->cfg->len - dma->cfg->sb_off;
++	u32 len = dma->cfg->len;
++	u32 db = dma->cfg->db_off;
++	u32 sb = dma->cfg->sb_off;
+ 
+ 	if (ctl_idx < CTL_0 || ctl_idx >= CTL_MAX)
+ 		return false;
+-	return l->queue1(ctl_idx) + 2 * sizeof(u32) <= sb_len &&
+-	       l->intr_status(ctl_idx) + sizeof(u32) <= sb_len &&
+-	       l->intr_clear(ctl_idx) + sizeof(u32) <= sb_len;
++
++	return dpu_reg_dma_window_has(len, db, l->queue0(ctl_idx), 2 * sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, sb, l->queue1(ctl_idx), 2 * sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, db, l->intr_status(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, sb, l->intr_status(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, db, l->intr_clear(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, sb, l->intr_clear(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, db, l->error_status(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, sb, l->error_status(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, db, l->error_clear(ctl_idx), sizeof(u32)) &&
++	       dpu_reg_dma_window_has(len, sb, l->error_clear(ctl_idx), sizeof(u32));
+ }
+ 
+ static int kick_off(struct dpu_reg_dma *dma, int ctl_idx, struct dpu_reg_dma_buf *buf,
+@@ -269,10 +326,10 @@ static int kick_off(struct dpu_reg_dma *dma, int ctl_idx, struct dpu_reg_dma_buf
+ 		cmd1 |= CMD_LAST;
+ 
+ 	DPU_REG_WRITE(win, REG_DMA_OPMODE, BIT(0));
+-	status = DPU_REG_READ(win, l->intr4_status);
++	status = DPU_REG_READ(win, l->error_status(ctl_idx));
+ 	if (status) {
+ 		DRM_ERROR_RATELIMITED("LUTDMA error status %#x\n", status);
+-		DPU_REG_WRITE(win, l->intr4_clear, REG_DMA_ERROR_CLEAR_MASK);
++		DPU_REG_WRITE(win, l->error_clear(ctl_idx), REG_DMA_ERROR_CLEAR_MASK);
+ 	}
+ 
+ 	DPU_REG_WRITE(win, queue, lower_32_bits(buf->iova));
+@@ -345,7 +402,8 @@ int dpu_reg_dma_flush_db(struct dpu_reg_dma *dma, int ctl_idx, struct dpu_hw_blk
+ 	if (ret)
+ 		return ret;
+ 
+-	DPU_REG_WRITE(ctl_hw, CTL_REG_DMA_TRIGGER, BIT(0));
++	DPU_REG_WRITE(ctl_hw, dma->layout->trigger_off,
++		      dma->layout->trigger_mask(ctl_idx));
+ 	ret = read_poll_timeout(DPU_REG_READ, status, status & dma->layout->db_done_mask(ctl_idx),
+ 				10, DONE_TIMEOUT_US, false,
+ 				&dma->db, dma->layout->intr_status(ctl_idx));
+@@ -373,17 +431,17 @@ void dpu_reg_dma_debugfs_show(struct dpu_reg_dma *dma, struct seq_file *s)
+ 	int i;
+ 
+ 	seq_printf(s, "engine v%x sb_off %#x\n", dma->cfg->version, dma->cfg->sb_off);
+-	seq_printf(s, "opmode %#010x intr4_status %#010x\n",
+-		   DPU_REG_READ(&dma->sb, REG_DMA_OPMODE), DPU_REG_READ(&dma->sb, l->intr4_status));
++	seq_printf(s, "opmode %#010x\n", DPU_REG_READ(&dma->sb, REG_DMA_OPMODE));
+ 	for (i = CTL_0; i < CTL_MAX; i++) {
+ 		if (!dpu_reg_dma_ctl_valid(dma, i))
+ 			continue;
+ 		if (!dma->last_cmd[i].iova)
+ 			continue;
+-		seq_printf(s, "ctl%d q1 addr %#010x cmd %#010x intr_status %#010x done %d last_cmd iova %#llx\n",
++		seq_printf(s, "ctl%d q1 addr %#010x cmd %#010x intr_status %#010x err_status %#010x done %d last_cmd iova %#llx\n",
+ 			   i - CTL_0, DPU_REG_READ(&dma->sb, l->queue1(i)),
+ 			   DPU_REG_READ(&dma->sb, l->queue1(i) + 4),
+-			   DPU_REG_READ(&dma->sb, l->intr_status(i)), transfer_done(dma, i),
++			   DPU_REG_READ(&dma->sb, l->intr_status(i)),
++			   DPU_REG_READ(&dma->sb, l->error_status(i)), transfer_done(dma, i),
+ 			   dma->last_cmd[i].iova);
+ 	}
+ }
+@@ -405,6 +463,9 @@ struct dpu_reg_dma *dpu_reg_dma_init(struct drm_device *dev, struct drm_gpuvm *v
+ 	case DPU_REG_DMA_VER_3_0:
+ 		dma->layout = &dpu_reg_dma_v3;
+ 		break;
++	case DPU_REG_DMA_VER_4_0:
++		dma->layout = &dpu_reg_dma_v4;
++		break;
+ 	default:
+ 		return ERR_PTR(-EOPNOTSUPP);
+ 	}
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.h
+index 0e07258..b365b9f 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_reg_dma.h
+@@ -36,6 +36,7 @@ struct drm_gem_object;
+ 
+ #define DPU_REG_DMA_VER_2_0		0x20000
+ #define DPU_REG_DMA_VER_3_0		0x30000
++#define DPU_REG_DMA_VER_4_0		0x40000
+ 
+ struct dpu_reg_dma_buf {
+ 	struct drm_gem_object *bo;

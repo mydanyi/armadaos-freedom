@@ -1,0 +1,67 @@
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -246,6 +246,27 @@
+         return sensor != hwmon_sensors.end() && sensor->second.stream.is_open();
+     }
+ 
++    bool has_power() const
++    {
++        if (module != "msm_dpu")
++            return true;
++
++        const auto power = hwmon_sensors.find("power");
++        if (power != hwmon_sensors.end() && power->second.stream.is_open())
++            return true;
++        const auto energy = hwmon_sensors.find("energy");
++        return energy != hwmon_sensors.end() && energy->second.stream.is_open();
++    }
++
++    bool has_voltage() const
++    {
++        if (module != "msm_dpu")
++            return true;
++
++        const auto voltage = hwmon_sensors.find("voltage");
++        return voltage != hwmon_sensors.end() && voltage->second.stream.is_open();
++    }
++
+     void pause()
+     {
+         paused = true;
+--- a/src/gpu.h
++++ b/src/gpu.h
+@@ -104,6 +104,14 @@
+             return !fdinfo || fdinfo->has_fan();
+         }
+ 
++        bool has_power() const {
++            return !fdinfo || fdinfo->has_power();
++        }
++
++        bool has_voltage() const {
++            return !fdinfo || fdinfo->has_voltage();
++        }
++
+         std::shared_ptr<Throttling> throttling() {
+             if (nvidia)
+                 return nvidia->throttling;
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -373,7 +373,7 @@
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power]) {
++            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power] && gpu->has_power()) {
+                 ImguiNextColumnOrNewRow();
+                 char str[16];
+                 snprintf(str, sizeof(str), "%.1f", gpu->metrics.powerUsage);
+@@ -408,7 +408,7 @@
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_voltage]) {
++            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_voltage] && gpu->has_voltage()) {
+                 ImguiNextColumnOrNewRow();
+                 right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.voltage);
+                 ImGui::SameLine(0, 1.0f);

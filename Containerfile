@@ -13,7 +13,6 @@ ARG GAMESCOPE_REF
 ARG GAMESCOPE_SESSION_REF
 ARG GAMESCOPE_SESSION_STEAM_REF
 ARG KWIN_REF
-ARG PLASMA_MOBILE_REF
 ARG POWERDEVIL_REF
 ARG PROTONTRICKS_REF
 ARG KERNEL_REF
@@ -48,8 +47,6 @@ FROM ${GAMESCOPE_SESSION_REF} AS gamescope-session
 FROM ${GAMESCOPE_SESSION_STEAM_REF} AS gamescope-session-steam
 
 FROM ${KWIN_REF} AS kwin
-
-FROM ${PLASMA_MOBILE_REF} AS plasma-mobile
 
 FROM ${POWERDEVIL_REF} AS powerdevil
 
@@ -146,7 +143,6 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=gamescope-session,source=/rpms,target=/packages/gamescope-session \
     --mount=type=bind,from=gamescope-session-steam,source=/rpms,target=/packages/gamescope-session-steam \
     --mount=type=bind,from=kwin,source=/rpms,target=/packages/kwin \
-    --mount=type=bind,from=plasma-mobile,source=/rpms,target=/packages/plasma-mobile \
     --mount=type=bind,from=powerdevil,source=/rpms,target=/packages/powerdevil \
     --mount=type=bind,from=protontricks,source=/rpms,target=/packages/protontricks \
     --mount=type=bind,from=kernel,source=/kernel,target=/packages/kernel \
@@ -167,6 +163,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=btop-cn,source=/rpms,target=/packages/btop-cn \
     --mount=type=bind,from=decky-build,source=/build/freedom-control/dist,target=/packages/decky-dist \
     --mount=type=bind,from=decky-build,source=/build/armada-store/dist,target=/packages/decky-store-dist \
+    --mount=type=secret,id=decky_releases,target=/run/secrets/decky_releases,required=false \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \

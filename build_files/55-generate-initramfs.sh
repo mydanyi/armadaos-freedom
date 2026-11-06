@@ -10,6 +10,29 @@ IMG="/usr/lib/modules/${KVER}/initramfs.img"
 # dracut-install aborts resolving /root without the target.
 mkdir -p /var/roothome
 
+BOOT_HELPER=/ctx/build_files/edl_boot_requirements.py
+CONFIG=/ctx/build_files/edl-devices.json
+
+firmware_text="$(python3 "${BOOT_HELPER}" --config "${CONFIG}" --root / --kver "${KVER}" --format firmware)"
+firmware=()
+if [ -n "${firmware_text}" ]; then
+    mapfile -t firmware <<< "${firmware_text}"
+fi
+
+drivers_text="$(python3 "${BOOT_HELPER}" --config "${CONFIG}" --root / --kver "${KVER}" --format drivers)"
+drivers=()
+if [ -n "${drivers_text}" ]; then
+    mapfile -t drivers <<< "${drivers_text}"
+fi
+
+optional_args=()
+if [ "${#firmware[@]}" -gt 0 ]; then
+    optional_args+=(--install "${firmware[*]}")
+fi
+if [ "${#drivers[@]}" -gt 0 ]; then
+    optional_args+=(--add-drivers "${drivers[*]}")
+fi
+
 # --xz: the Zstd default exceeds the 96MiB Android boot partition envelope;
 # XZ keeps the early CPIO bytes and main CPIO content unchanged.
 dracut \
@@ -21,6 +44,7 @@ dracut \
     --add ostree \
     --add armada-splash \
     --add armada-ostree-fallback \
+    "${optional_args[@]}" \
     "${IMG}" "${KVER}"
 
 # dracut drops modules silently: fail the build rather than ship without.
@@ -60,5 +84,7 @@ if ! lsinitrd "${IMG}" | awk '
     dracut --list-modules --kver "${KVER}" | grep -i armada || true
     exit 1
 fi
+
+python3 "${BOOT_HELPER}" --config "${CONFIG}" --kver "${KVER}" --initrd "${IMG}" --root / --format verify
 
 echo "initramfs generated for ${KVER} with armada-splash"

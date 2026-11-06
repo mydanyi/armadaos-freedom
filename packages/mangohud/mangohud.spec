@@ -29,6 +29,9 @@ Patch6:         0006-SM8750-Battery.patch
 Patch7:         0007-gpu_fdinfo-skip-unreadable-fdinfo.patch
 Patch8:         0008-mangoapp-show-active-upscaler.patch
 Patch9:         0009-sm8850-battery-and-thermal-sensors.patch
+Patch10:        0010-msm-global-gpu-metrics.patch
+Patch11:        0011-battery-percent-prefer-capacity.patch
+Patch12:        0012-msm-hide-unavailable-power-voltage.patch
 
 BuildRequires:  vulkan-headers
 BuildRequires:  appstream

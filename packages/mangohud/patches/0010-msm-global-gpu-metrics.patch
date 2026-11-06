@@ -1,0 +1,220 @@
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -382,6 +382,9 @@
+ 
+ int GPU_fdinfo::get_gpu_load()
+ {
++    if (module == "msm_dpu")
++        return get_msm_load();
++
+     if (module == "xe")
+         return get_xe_load();
+     else if (module == "msm_drm")
+@@ -547,6 +550,18 @@
+     }
+ }
+ 
++int GPU_fdinfo::get_msm_load()
++{
++    msm_busy_stream.clear();
++    msm_busy_stream.seekg(0);
++    uint64_t busy_ns;
++    if (!(msm_busy_stream >> busy_ns)) {
++        msm_busy_ratio.reset();
++        return -1;
++    }
++    return msm_busy_ratio.sample(busy_ns, os_time_get_nano());
++}
++
+ int GPU_fdinfo::get_gpu_clock()
+ {
+     if (module == "panfrost" || module == "panthor")
+@@ -675,6 +690,13 @@
+         return;
+     }
+ 
++    if (module == "msm_dpu") {
++        const std::string busy_path = sys_path + "/device/gpu_busy_time_ns";
++        msm_busy_stream.open(busy_path);
++        if (msm_busy_stream.is_open())
++            SPDLOG_DEBUG("msm: whole-GPU busy counter {}", busy_path);
++    }
++
+     // Only GPU clocks accessible
+     for (std::string metric : {"cur_freq" }) {
+         std::string p = sys_path + "/" + metric;
+@@ -780,6 +802,8 @@
+ 
+         if (module == "msm_drm")
+             metrics.temp = get_kgsl_temp();
++        else if (msm_temperatures && msm_temperatures->size())
++            metrics.temp = msm_temperatures->maximum();
+         else
+             metrics.temp = hwmon_sensors["temp"].val / 1000.f;
+ 
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -23,6 +23,7 @@
+ #include <filesystem.h>
+ 
+ #include "gpu_metrics_util.h"
++#include "msm_metrics.h"
+ 
+ struct hwmon_sensor {
+     std::regex rx;
+@@ -76,6 +77,11 @@
+     uint64_t get_gpu_time();
+ 
+     uint64_t previous_gpu_time = 0, previous_time = 0;
++
++    std::ifstream msm_busy_stream;
++    msm_metrics::BusyRatio msm_busy_ratio;
++    std::unique_ptr<msm_metrics::Temperatures> msm_temperatures;
++    int get_msm_load();
+ 
+     std::vector<uint64_t> xe_fdinfo_last_cycles;
+     std::map<std::string, std::pair<uint64_t, uint64_t>> prev_xe_cycles;
+@@ -210,6 +216,9 @@
+ 
+         find_hwmon_sensors();
+ 
++        if (module == "msm_dpu")
++            msm_temperatures = std::make_unique<msm_metrics::Temperatures>();
++
+         if (module == "i915")
+             find_i915_gt_dir();
+         else if (module == "xe")
+@@ -231,6 +240,12 @@
+         return metrics;
+     };
+ 
++    bool has_fan() const
++    {
++        const auto sensor = hwmon_sensors.find("fan_speed");
++        return sensor != hwmon_sensors.end() && sensor->second.stream.is_open();
++    }
++
+     void pause()
+     {
+         paused = true;
+--- a/src/gpu.h
++++ b/src/gpu.h
+@@ -100,6 +100,10 @@
+                 return false;
+         }
+ 
++        bool has_fan() const {
++            return !fdinfo || fdinfo->has_fan();
++        }
++
+         std::shared_ptr<Throttling> throttling() {
+             if (nvidia)
+                 return nvidia->throttling;
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -290,7 +290,10 @@
+ 
+             ImguiNextColumnOrNewRow();
+             auto text_color = HUDElements.colors.text;
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_load_change]){
++            if (gpu->metrics.load < 0) {
++                right_aligned_text(text_color, HUDElements.ralign_width, "N/A");
++            }
++            else if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_load_change]){
+                 struct LOAD_DATA gpu_data = {
+                     HUDElements.colors.gpu_load_low,
+                     HUDElements.colors.gpu_load_med,
+@@ -345,7 +348,7 @@
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_fan] && !gpu->is_apu()){
++            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_fan] && !gpu->is_apu() && gpu->has_fan()){
+                 ImguiNextColumnOrNewRow();
+                 right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.fan_speed);
+                 ImGui::SameLine(0, 1.0f);
+--- /dev/null
++++ b/src/msm_metrics.h
+@@ -0,0 +1,82 @@
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <filesystem>
++#include <fstream>
++#include <regex>
++#include <string>
++#include <vector>
++
++namespace msm_metrics {
++
++class BusyRatio {
++    uint64_t previous_busy = 0;
++    uint64_t previous_time = 0;
++    bool initialized = false;
++public:
++    void reset() { initialized = false; }
++
++    int sample(uint64_t busy_ns, uint64_t time_ns)
++    {
++        int result = -1;
++        if (initialized && busy_ns >= previous_busy && time_ns > previous_time) {
++            const double percent = 100.0 * (busy_ns - previous_busy) /
++                                   (time_ns - previous_time);
++            result = static_cast<int>(std::lround(std::clamp(percent, 0.0, 100.0)));
++        }
++        previous_busy = busy_ns;
++        previous_time = time_ns;
++        initialized = true;
++        return result;
++    }
++};
++
++class Temperatures {
++    std::vector<std::ifstream> streams;
++public:
++    explicit Temperatures(const std::string& root = "/sys/class/hwmon")
++    {
++        namespace fs = std::filesystem;
++        std::error_code error;
++        const std::regex gpu_name("gpuss_[0-9]+_thermal|gpu_thermal|gpu");
++        const std::regex temperature_file("temp[0-9]+_input");
++        for (fs::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
++            std::ifstream name_file(it->path() / "name");
++            std::string name;
++            if (!(name_file >> name) || !std::regex_match(name, gpu_name))
++                continue;
++            std::error_code sensor_error;
++            for (fs::directory_iterator sensor(it->path(), sensor_error), last;
++                 !sensor_error && sensor != last; sensor.increment(sensor_error)) {
++                if (!std::regex_match(sensor->path().filename().string(), temperature_file))
++                    continue;
++                std::ifstream input(sensor->path());
++                if (input.is_open())
++                    streams.push_back(std::move(input));
++            }
++        }
++    }
++
++    size_t size() const { return streams.size(); }
++
++    int maximum()
++    {
++        bool valid = false;
++        int maximum_millidegrees = 0;
++        for (auto& stream : streams) {
++            stream.clear();
++            stream.seekg(0);
++            int millidegrees;
++            if (!(stream >> millidegrees))
++                continue;
++            if (!valid || millidegrees > maximum_millidegrees)
++                maximum_millidegrees = millidegrees;
++            valid = true;
++        }
++        return valid ? maximum_millidegrees / 1000 : -1;
++    }
++};
++
++}

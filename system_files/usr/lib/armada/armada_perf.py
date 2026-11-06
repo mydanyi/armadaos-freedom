@@ -9,12 +9,36 @@ import tempfile
 STATE_FILE = pathlib.Path("/run/armada/perf-state.json")
 SESSION_SOCKET = "/run/armada/session.sock"
 DEVICE_ENV_HELPER = "/usr/libexec/armada/device-env"
+MODULES_ROOT = pathlib.Path("/usr/lib/modules")
 
 CORE_PRESETS = ("all", "big", "prime", "little")
-SCHEDULERS = ("eevdf", "cosmos", "lavd")
+SCHEDULERS = ("eevdf", "infinity", "cosmos", "lavd")
 GAMESCOPE_COMMS = ("gamescope", "gamescope-wl")
 NICE_MIN, NICE_MAX = -20, 19
 GAMESCOPE_NICE_MIN, GAMESCOPE_NICE_MAX = -20, 19
+
+
+def kernel_default_scheduler():
+    # The kernel overlay contract stages a marker at
+    # /usr/lib/modules/<uname().release>/freedom-scheduler. Only the running
+    # kernel's marker is inspected; anything missing/unreadable/malformed
+    # falls back to eevdf. Other installed kernels are ignored.
+    marker = MODULES_ROOT / os.uname().release / "freedom-scheduler"
+    try:
+        content = marker.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return "eevdf"
+    return "infinity" if content.strip() == "infinity-v1" else "eevdf"
+
+
+def resolve_scheduler(value):
+    # Base value "eevdf" is an alias for whatever the running kernel actually
+    # defaults to; unknown/empty values also resolve to that default. Explicit
+    # scx choices (cosmos/lavd) pass through untouched.
+    if value in ("cosmos", "lavd"):
+        return value
+    return kernel_default_scheduler()
+
 
 def parse_cpulist(text):
     # Order preserved: feeds WINE_CPU_TOPOLOGY (reported CPU i = host list[i]).
@@ -138,7 +162,7 @@ def sanitize_perf(settings, env=None):
         except ValueError:
             pass
     if settings.get("scheduler") in SCHEDULERS:
-        clean["scheduler"] = settings["scheduler"]
+        clean["scheduler"] = resolve_scheduler(settings["scheduler"])
     return clean
 
 
@@ -171,7 +195,7 @@ def effective_state(state):
     values = {
         "gamescopeNice": 0,
         "gamescopeCores": None,
-        "scheduler": "eevdf",
+        "scheduler": kernel_default_scheduler(),
         "schedulerDomain": None,
     }
     for layer in (state.get("global"), state.get("override")):
@@ -180,6 +204,7 @@ def effective_state(state):
         for key in values:
             if key in layer and layer[key] is not None:
                 values[key] = layer[key]
+    values["scheduler"] = resolve_scheduler(values["scheduler"])
     return values
 
 

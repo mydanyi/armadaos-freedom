@@ -49,6 +49,24 @@ TB322FC_PROFILE = {
     "runtimeCmakeArgs": ["-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"],
     "bootPartitionBytes": BOOT_PARTITION_BYTES,
     "diagnosticMode": "rd-break",
+    "bootRequirements": {
+        "earlyFirmware": [
+            "qcom/gen80000_sqe.fw",
+            "qcom/gen80000_gmu.bin",
+            "qcom/gen80000_aqe.fw",
+            "qcom/sm8750/lenovo/elden/gen80000_zap.mbn",
+            "novatek_ts_csot_3k_fw.bin",
+        ],
+        "earlyDrivers": [
+            "qcom_pil_info",
+            "qcom_common",
+            "qcom_sysmon",
+            "qcom_q6v5",
+            "qcom_q6v5_pas",
+            "novatek-nvt36xxx-spi",
+        ],
+        "firmwareSha256": {},
+    },
 }
 
 TB323FU_PROFILE = {
@@ -66,6 +84,27 @@ TB323FU_PROFILE = {
     "runtimeCmakeArgs": ["-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=ON"],
     "bootPartitionBytes": BOOT_PARTITION_BYTES,
     "diagnosticMode": "verbose",
+    "bootRequirements": {
+        "earlyFirmware": [
+            "qcom/gen80200_sqe.fw",
+            "qcom/gen80200_gmu.bin",
+            "qcom/gen80200_aqe.fw",
+            "qcom/kaanapali/Lenovo/baldur/gen80200_zap.mbn",
+            "novatek/novatek_ts_fw.bin",
+        ],
+        "earlyDrivers": [
+            "qcom_pil_info",
+            "qcom_common",
+            "qcom_sysmon",
+            "qcom_q6v5",
+            "qcom_q6v5_pas",
+            "nt36536_ts",
+        ],
+        "firmwareSha256": {
+            "qcom/kaanapali/Lenovo/baldur/gen80200_zap.mbn": "2d56c203d49492363c5458812d8da41a3e6a8949f62b72f090653b4897f1013a",
+            "novatek/novatek_ts_fw.bin": "a374ce0856f9e61bd62de955e93d2585963a0636ff7390de2248386e896c114f",
+        },
+    },
 }
 
 REAL_PROFILES = {"TB322FC": TB322FC_PROFILE, "TB323FU": TB323FU_PROFILE}

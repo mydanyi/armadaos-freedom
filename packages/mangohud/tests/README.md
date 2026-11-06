@@ -37,3 +37,22 @@ build system or extra tooling is required.
 
 This is a raw-wire check only; it does not validate rendering, HUD output or
 performance.
+
+## Battery percentage
+
+`battery_percent_test.cpp` links the real `src/battery.cpp` and creates
+sysfs-shaped fixtures below an explicit output directory. It checks the
+single-battery capacity reading, raw charge/energy fallbacks, percentage bounds,
+invalid denominators, and the existing two-battery aggregation.
+
+```sh
+g++ -std=c++17 -include vector \
+    -I "$MANGOHUD_SOURCE/src" -I "$MANGOHUD_SOURCE/include" \
+    packages/mangohud/tests/battery_percent_test.cpp \
+    "$MANGOHUD_SOURCE/src/battery.cpp" -lspdlog -lfmt \
+    -o "$TASK_OUTPUT/battery_percent_test"
+"$TASK_OUTPUT/battery_percent_test" "$TASK_OUTPUT"
+```
+
+Use a disposable output directory; the test owns its
+`battery_percent_fixture` subdirectory. It does not read the host battery.
