@@ -1,6 +1,7 @@
 #!/usr/bin/bash
-# USB network link (CDC NCM, 172.16.42.1/24 on the tablet) for devices whose profile sets
-# ARMADA_USB_NETWORK=1, and the SSH socket that listens on it.
+# USB network link (CDC NCM, 172.16.42.1/24 on the tablet) and the SSH socket that listens
+# on it. It runs where the device profile allows it (ARMADA_USB_NETWORK=1, the default) and
+# the user switch in Freedom Control is on (/etc/armada/usb-network.conf; on when missing).
 #
 # The link lives in one of two gadgets, never both, because the device has one USB device
 # controller:
@@ -13,11 +14,23 @@ set -euo pipefail
 gadget=/sys/kernel/config/usb_gadget/armada-usb-network
 config="$gadget/configs/c.1"
 function_name=ncm.usb0
+switch_config=${ARMADA_USB_NETWORK_CONFIG:-/etc/armada/usb-network.conf}
 
-enabled() {
+# The device profile allows the link.
+supported() {
     local ARMADA_USB_NETWORK=
     eval "$("${ARMADA_DEVICE_ENV:-/usr/libexec/armada/device-env}")"
     [[ "${ARMADA_USB_NETWORK:-}" == 1 ]]
+}
+
+# The user switch: on unless the config says enabled=0.
+switched_on() {
+    [[ -r "$switch_config" ]] || return 0
+    ! grep -qx 'enabled=0' "$switch_config"
+}
+
+enabled() {
+    supported && switched_on
 }
 
 stopping() {
@@ -100,6 +113,47 @@ resume() {
     systemctl --no-block start armada-usb-network.service
 }
 
+# The Freedom Control switch: saves the choice, then brings the link up or down at once.
+# While USB file transfer is on, the link lives in the MTP gadget, which is restarted so it
+# is rebuilt with or without the network function.
+set_switch() {
+    local value
+    case "${1:-}" in
+        on) value=1 ;;
+        off) value=0 ;;
+        *) printf 'usage: %s set {on|off}\n' "$0" >&2; exit 2 ;;
+    esac
+    mkdir -p "$(dirname "$switch_config")"
+    local tmp
+    tmp="$(mktemp "$switch_config.XXXXXX")"
+    printf 'enabled=%s\n' "$value" > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$switch_config"
+
+    local mtp=0
+    systemctl is-active --quiet armada-mtp.service && mtp=1
+    if [[ "$value" == 0 ]]; then
+        systemctl stop armada-usb-ssh.socket armada-usb-network.service
+        ((mtp)) && systemctl restart armada-mtp.service
+        return 0
+    fi
+    supported || return 0
+    if ((mtp)); then
+        systemctl restart armada-mtp.service
+        ssh_resume
+    else
+        systemctl start armada-usb-network.service
+    fi
+}
+
+# Prints the switch and whether the profile allows the link, for Freedom Control.
+state() {
+    local on=0 allowed=0
+    switched_on && on=1
+    supported && allowed=1
+    printf 'enabled=%s\nsupported=%s\n' "$on" "$allowed"
+}
+
 # Brings the USB SSH socket back once the system-wide sshd is off.
 ssh_resume() {
     enabled || return 0
@@ -116,8 +170,10 @@ case "${1:-}" in
     detach) detach "${2:?gadget path}" ;;
     resume) resume ;;
     ssh-resume) ssh_resume ;;
+    set) set_switch "${2:-}" ;;
+    state) state ;;
     *)
-        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume}\n' "$0" >&2
+        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume|set on|off|state}\n' "$0" >&2
         exit 2
         ;;
 esac
