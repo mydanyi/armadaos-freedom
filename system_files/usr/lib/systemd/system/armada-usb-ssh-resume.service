@@ -1,0 +1,10 @@
+[Unit]
+Description=Armada deferred USB SSH socket start
+Documentation=file:///usr/libexec/armada/usb-network
+# Ordered after sshd.service so the deferred start runs only once the sshd stop or
+# restart transaction has finished; the helper re-checks sshd's ActiveState anyway.
+After=sshd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/armada/usb-network ssh-start

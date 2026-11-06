@@ -9,6 +9,8 @@ Before=sshd.service
 
 [Socket]
 ListenStream=172.16.42.1:22
+# Ingress only over usb0; also adds implicit BindsTo=/After= on the netdev unit.
+BindToDevice=usb0
 FreeBind=yes
 Accept=yes
 IPAddressAllow=172.16.42.0/24

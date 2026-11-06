@@ -1,0 +1,11 @@
+[Unit]
+Description=Armada USB device controller %i
+Documentation=file:///usr/libexec/armada/usb-network
+BindsTo=%i.device
+After=%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/armada/usb-network resume
+ExecStop=-/usr/bin/systemctl --no-block stop armada-usb-network.service

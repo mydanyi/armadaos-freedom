@@ -2,3 +2,11 @@
 # network function of Armada's own gadgets back to it (the standalone USB network gadget, or the MTP
 # gadget while USB file transfer is on), so armada-usb.nmconnection can address usb0.
 SUBSYSTEM=="net", ENV{DEVTYPE}=="gadget", DRIVERS=="configfs-gadget.armada-usb-network|configfs-gadget.armada-mtp", ENV{NM_UNMANAGED}="0"
+
+# BindToDevice stops the socket when usb0 disappears. Reopen it for the replacement
+# interface, after either of Armada's gadgets creates its network function.
+SUBSYSTEM=="net", KERNEL=="usb0", ACTION=="add", ENV{DEVTYPE}=="gadget", DRIVERS=="configfs-gadget.armada-usb-network|configfs-gadget.armada-mtp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="armada-usb-ssh-resume.service"
+
+# The empty template instance expands to the escaped UDC sysfs path. Its lifetime
+# follows that device, allowing a late controller or a return from host mode.
+ACTION=="add", SUBSYSTEM=="udc", TAG+="systemd", ENV{SYSTEMD_WANTS}+="armada-usb-udc@.service"

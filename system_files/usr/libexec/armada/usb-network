@@ -129,7 +129,8 @@ detach() {
 resume() {
     enabled || return 0
     stopping && return 0
-    systemctl reset-failed armada-usb-network.service
+    # An inactive unit may have been garbage-collected; start loads it again.
+    systemctl reset-failed armada-usb-network.service || :
     systemctl --no-block start armada-usb-network.service
 }
 
@@ -150,8 +151,13 @@ set_switch() {
     chmod 0644 "$tmp"
     mv -f "$tmp" "$switch_config"
 
-    local mtp=0
-    systemctl is-active --quiet armada-mtp.service && mtp=1
+    local mtp=0 mtp_state
+    mtp_state="$(systemctl show -p ActiveState --value armada-mtp.service)" || return 1
+    case "$mtp_state" in
+        active|activating|reloading) mtp=1 ;;
+        inactive|failed|deactivating) mtp=0 ;;
+        *) printf 'armada-usb-network: cannot read armada-mtp.service state: %s\n' "$mtp_state" >&2; exit 1 ;;
+    esac
     if ((mtp)); then
         systemctl reset-failed armada-mtp.service
     fi
@@ -165,7 +171,7 @@ set_switch() {
         systemctl restart armada-mtp.service
         ssh_resume
     else
-        systemctl reset-failed armada-usb-network.service
+        systemctl reset-failed armada-usb-network.service || :
         systemctl start armada-usb-network.service
     fi
 }
@@ -178,12 +184,25 @@ state() {
     printf 'enabled=%s\nsupported=%s\n' "$on" "$allowed"
 }
 
-# Brings the USB SSH socket back once the system-wide sshd is off.
+# Wait for sshd's stop or restart transaction before checking whether USB SSH
+# should take over. Starting the conflicting socket from ExecStopPost cancels restarts.
 ssh_resume() {
     enabled || return 0
     stopping && return 0
-    systemctl is-active --quiet sshd.service && return 0
-    systemctl --no-block start armada-usb-ssh.socket
+    systemctl --no-block start armada-usb-ssh-resume.service
+}
+
+# Called by the deferred unit, after sshd has settled.
+ssh_start() {
+    enabled || return 0
+    stopping && return 0
+    local state
+    state="$(systemctl show -p ActiveState --value sshd.service)" || return 1
+    [[ -n "$state" ]] || return 1
+    case "$state" in
+        inactive|failed) systemctl --no-block start armada-usb-ssh.socket ;;
+        *) return 0 ;;
+    esac
 }
 
 case "${1:-}" in
@@ -194,10 +213,11 @@ case "${1:-}" in
     detach) detach "${2:?gadget path}" ;;
     resume) resume ;;
     ssh-resume) ssh_resume ;;
+    ssh-start) ssh_start ;;
     set) set_switch "${2:-}" ;;
     state) state ;;
     *)
-        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume|set on|off|state}\n' "$0" >&2
+        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume|ssh-start|set on|off|state}\n' "$0" >&2
         exit 2
         ;;
 esac
