@@ -24,6 +24,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         skopeo \
         coreutils \
         findutils \
+        rpm \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/cache/libdnf5
 
@@ -35,6 +36,7 @@ RUN for tool in \
         bootc \
         git \
         skopeo \
+        rpm \
         dtc \
         fdtget \
         fdtput \

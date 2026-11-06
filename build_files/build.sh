@@ -23,3 +23,4 @@ run_step ./55-generate-initramfs.sh
 run_step ./60-set-default-target.sh
 run_step ./70-cleanup.sh
 run_step ./80-finalize-update-state.sh
+run_step python3 ./verify_plasma_runtime.py --check-runtime

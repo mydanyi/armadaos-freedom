@@ -834,6 +834,12 @@ def _verify_frozen_overlay(source, deployment):
             raise ValueError(f"deployed mode does not match the source overlay: {relative}")
 
 
+def _verify_plasma_packages(deployment):
+    helper_path = Path(__file__).resolve().with_name('verify_plasma_runtime.py')
+    module = _load_module('verify_plasma_runtime_sibling', helper_path)
+    module.verify_packages(Path(deployment))
+
+
 def _write_deployment_markers(target, deployment, build):
     etc = Path(deployment) / "etc"
     marker = {
@@ -1028,6 +1034,7 @@ def _produce(args):
         )
         deployment = _selected_deployment(target, result["deployment_checksum"])
         _verify_frozen_overlay(source, deployment)
+        _verify_plasma_packages(deployment)
         _write_deployment_markers(target, deployment, build)
         _copy_payload(
             target / "boot" / result["image"],
