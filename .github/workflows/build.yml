@@ -94,11 +94,13 @@ jobs:
           ref: ${{ github.sha }}
           submodules: recursive
 
+      - name: Check Plasma runtime tests
+        run: python3 -m unittest discover -s tests -p test_plasma_runtime.py
+
       - name: Check boot dependency requirements
         run: |
           python3 -m unittest discover -s tests -p test_edl_boot_requirements.py
           python3 -m unittest discover -s tests -p test_initramfs_requirement_failure.py
-          python3 -m unittest discover -s tests -p test_plasma_runtime.py
 
       # Resolve before the image build so the OCI layers bundle the latest
       # plugin sources instead of a cached earlier resolution.

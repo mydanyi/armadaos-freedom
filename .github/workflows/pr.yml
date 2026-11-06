@@ -45,11 +45,13 @@ jobs:
       - name: Check tablet input integration
         run: bash tests/tb323fu-input-test.sh
 
+      - name: Check Plasma runtime tests
+        run: python3 -m unittest discover -s tests -p test_plasma_runtime.py
+
       - name: Check boot dependency requirements
         run: |
           python3 -m unittest discover -s tests -p test_edl_boot_requirements.py
           python3 -m unittest discover -s tests -p test_initramfs_requirement_failure.py
-          python3 -m unittest discover -s tests -p test_plasma_runtime.py
 
       - name: Install skopeo
         run: command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install -y skopeo; }
