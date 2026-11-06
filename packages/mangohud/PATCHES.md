@@ -31,6 +31,11 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   Requires the matching kernel `gpu_busy_time_ns` ABI. The busy-time percentage
   measures time executing GPU work, not shader occupancy or peak throughput.
 
+- `patches/0011-battery-percent-prefer-capacity.patch`
+  source: armada
+  Prefer the kernel capacity reading on single-battery systems and bound raw
+  fallback percentages. Keep the existing multi-battery aggregation path.
+
 - `patches/0012-msm-hide-unavailable-power-voltage.patch`
   source: armada
   Hide MSM DPU GPU power and voltage fields when their hwmon sources are absent.

@@ -1,0 +1,48 @@
+--- a/src/battery.cpp
++++ b/src/battery.cpp
+@@ -1,5 +1,7 @@
+ #include <spdlog/spdlog.h>
+ #include <filesystem.h>
++#include <algorithm>
++#include <cmath>
+ #include "battery.h"
+ 
+ namespace fs = ghc::filesystem;
+@@ -53,6 +55,18 @@
+ {
+     float charge_n = 0;
+     float charge_f = 0;
++
++    // For single-battery systems, prefer the numeric capacity file if it is
++    // finite and within [0,100]; the kernel may report a value that differs
++    // from a raw charge_now/charge_full ratio (e.g. charge_now > charge_full
++    // during calibration), and UPower/system tools use capacity.
++    if (batt_count == 1) {
++        std::ifstream input(battPath[0] + "/capacity");
++        float cap_val = 0.0f;
++        if (input >> cap_val && std::isfinite(cap_val) && cap_val >= 0.0f && cap_val <= 100.0f)
++            return cap_val;
++    }
++
+     for(int i = 0; i < batt_count; i++) {
+         string syspath = battPath[i];
+         string charge_now = syspath + "/charge_now";
+@@ -96,7 +110,17 @@
+             }
+         }
+     }
+-    return (charge_n / charge_f) * 100;
++
++    if (!std::isfinite(charge_f) || charge_f <= 0.0f || !std::isfinite(charge_n)) {
++        if (std::isfinite(current_percent))
++            return std::clamp(current_percent, 0.0f, 100.0f);
++        return 0.0f;
++    }
++
++    float ratio = (charge_n / charge_f) * 100.0f;
++    if (!std::isfinite(ratio))
++        ratio = 0.0f;
++    return std::clamp(ratio, 0.0f, 100.0f);
+ }
+ 
+ float BatteryStats::getPower() {
