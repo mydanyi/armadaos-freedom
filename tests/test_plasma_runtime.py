@@ -332,15 +332,15 @@ class BuildWiringTest(unittest.TestCase):
             lines.index('run_step ./70-cleanup.sh'),
         )
 
-    def test_edl_producer_checks_plasma_before_model_and_payload(self):
+    def test_edl_producer_checks_plasma_before_markers_and_payload(self):
         source = self._read('build_files/make-edl-raw-package.py')
         plasma_call = source.find('        _verify_plasma_packages(deployment)')
-        model_call = source.find('        _verify_model_boot_requirements(')
+        markers_call = source.find('        _write_deployment_markers(')
         payload_call = source.find('        _copy_payload(')
         self.assertNotEqual(plasma_call, -1)
-        self.assertNotEqual(model_call, -1)
+        self.assertNotEqual(markers_call, -1)
         self.assertNotEqual(payload_call, -1)
-        self.assertLess(plasma_call, model_call)
+        self.assertLess(plasma_call, markers_call)
         self.assertLess(plasma_call, payload_call)
         self.assertIn('verify_plasma_runtime_sibling', source)
         self.assertIn('module.verify_packages(Path(deployment))', source)
@@ -370,16 +370,16 @@ class BuildWiringTest(unittest.TestCase):
         self.assertIn('        rpm', containerfile)
 
     def test_ci_runs_plasma_runtime_tests(self):
+        command = (
+            'python3 -m unittest discover -s tests -p test_plasma_runtime.py'
+        )
         for relative in (
             '.github/workflows/pr.yml',
             '.github/workflows/build.yml',
             '.github/workflows/build-edl-package.yml',
         ):
             with self.subTest(workflow=relative):
-                self.assertIn(
-                    'python3 -m unittest discover -s tests -p test_plasma_runtime.py',
-                    self._read(relative),
-                )
+                self.assertEqual(self._read(relative).count(command), 1)
 
 
 if __name__ == '__main__':

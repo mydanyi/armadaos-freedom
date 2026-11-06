@@ -94,6 +94,9 @@ jobs:
           ref: ${{ github.sha }}
           submodules: recursive
 
+      - name: Check Plasma runtime tests
+        run: python3 -m unittest discover -s tests -p test_plasma_runtime.py
+
       # Resolve before the image build so the OCI layers bundle the latest
       # plugin sources instead of a cached earlier resolution.
       - name: Resolve latest bundled plugins

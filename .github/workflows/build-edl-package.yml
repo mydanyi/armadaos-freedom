@@ -67,6 +67,9 @@ jobs:
           ref: ${{ inputs.source_ref }}
           submodules: recursive
 
+      - name: Check Plasma runtime tests
+        run: python3 -m unittest discover -s tests -p test_plasma_runtime.py
+
       - name: Install just
         uses: ublue-os/just-action@30ab4659369934b65b655bf8d2fa4ddd6547d384 # v3
 
