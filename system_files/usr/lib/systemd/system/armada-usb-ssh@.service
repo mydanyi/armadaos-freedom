@@ -1,0 +1,9 @@
+[Unit]
+Description=Armada SSH session over the USB network link
+Wants=sshd-keygen.target
+After=sshd-keygen.target
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i -e -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no -o "AuthorizedKeysFile=.ssh/authorized_keys /etc/ssh/armada-usb-authorized_keys"
+StandardInput=socket
+StandardError=journal

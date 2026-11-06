@@ -115,6 +115,9 @@ find /etc/NetworkManager/system-connections -name '*.nmconnection' -exec chmod 0
 systemctl disable getty@tty1.service || true
 systemctl disable sshd.service || true
 systemctl disable armada-mtp.service || true
+# Runs only where the device profile allows it and the Freedom Control switch is on
+# (ExecCondition); both are on by default.
+systemctl enable armada-usb-network.service
 systemctl enable sddm.service
 systemctl enable tb323fu-btaddr.service
 systemctl enable tb323fu-usb-port.service

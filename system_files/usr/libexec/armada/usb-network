@@ -1,0 +1,223 @@
+#!/usr/bin/bash
+# USB network link (CDC NCM, 172.16.42.1/24 on the tablet) and the SSH socket that listens
+# on it. It runs where the device profile allows it (ARMADA_USB_NETWORK=1, the default) and
+# the user switch in Freedom Control is on (/etc/armada/usb-network.conf; on when missing).
+#
+# The link lives in one of two gadgets, never both, because the device has one USB device
+# controller:
+#   - its own gadget (armada-usb-network.service) while USB file transfer is off;
+#   - the MTP gadget (armada-mtp.service drop-in) while USB file transfer is on, as an
+#     MTP + network composite device.
+# NetworkManager addresses usb0 through armada-usb.nmconnection in either case.
+set -euo pipefail
+
+gadget=/sys/kernel/config/usb_gadget/armada-usb-network
+config="$gadget/configs/c.1"
+function_name=ncm.usb0
+switch_config=${ARMADA_USB_NETWORK_CONFIG:-/etc/armada/usb-network.conf}
+
+# The device profile allows the link.
+supported() {
+    local ARMADA_USB_NETWORK=
+    eval "$("${ARMADA_DEVICE_ENV:-/usr/libexec/armada/device-env}")"
+    [[ "${ARMADA_USB_NETWORK:-}" == 1 ]]
+}
+
+# The user switch: on unless the config says enabled=0.
+switched_on() {
+    [[ -r "$switch_config" ]] || return 0
+    ! grep -qx 'enabled=0' "$switch_config"
+}
+
+enabled() {
+    supported && switched_on
+}
+
+# Stable device serial derived from the machine id, same convention as mtp-gadget.
+serial_number() {
+    local id
+    id="$(systemd-id128 machine-id -a c130694e253a463d92175e45a1be98de 2>/dev/null)" || return 1
+    [[ -n "$id" ]] || return 1
+    printf '%s' "$id"
+}
+
+stopping() {
+    local state
+    state="$(systemctl is-system-running 2>/dev/null || true)"
+    [[ "$state" == stopping ]]
+}
+
+udc_name() {
+    shopt -s nullglob
+    local udcs=(/sys/class/udc/*)
+    ((${#udcs[@]} > 0)) || return 1
+    printf '%s' "${udcs[0]##*/}"
+}
+
+unbind() {
+    if [[ -e "$gadget/UDC" && -n "$(<"$gadget/UDC")" ]]; then
+        printf '\n' > "$gadget/UDC" || :
+    fi
+}
+
+teardown() {
+    unbind
+    [[ ! -L "$config/$function_name" ]] || rm "$config/$function_name" || :
+    [[ ! -d "$gadget/functions/$function_name" ]] || rmdir "$gadget/functions/$function_name" || :
+    [[ ! -d "$config/strings/0x409" ]] || rmdir "$config/strings/0x409" || :
+    [[ ! -d "$config" ]] || rmdir "$config" || :
+    [[ ! -d "$gadget/strings/0x409" ]] || rmdir "$gadget/strings/0x409" || :
+    [[ ! -d "$gadget" ]] || rmdir "$gadget" || :
+}
+
+start() {
+    /usr/sbin/modprobe libcomposite
+    if ! mountpoint -q /sys/kernel/config; then
+        mount -t configfs configfs /sys/kernel/config
+    fi
+    # A gadget left behind by a crash is rebuilt, never reused half-configured.
+    [[ ! -e "$gadget" ]] || teardown
+    local udc
+    for _ in $(seq 30); do
+        udc="$(udc_name)" && break
+        sleep 1
+    done
+    [[ -n "${udc:-}" ]] || { printf 'armada-usb-network: no USB device controller found\n' >&2; exit 1; }
+
+    mkdir "$gadget"
+    printf '0x1d6b' > "$gadget/idVendor"
+    printf '0x0104' > "$gadget/idProduct"
+    printf '0x0200' > "$gadget/bcdUSB"
+    local serial
+    serial="$(serial_number)" || { printf 'armada-usb-network: cannot derive serial number\n' >&2; teardown; exit 1; }
+    mkdir "$gadget/strings/0x409"
+    printf 'Armada' > "$gadget/strings/0x409/manufacturer"
+    printf 'Armada USB network' > "$gadget/strings/0x409/product"
+    printf '%s' "$serial" > "$gadget/strings/0x409/serialnumber"
+    printf '0xEF' > "$gadget/bDeviceClass"
+    printf '0x02' > "$gadget/bDeviceSubClass"
+    printf '0x01' > "$gadget/bDeviceProtocol"
+    mkdir "$config" "$config/strings/0x409"
+    printf 'NCM' > "$config/strings/0x409/configuration"
+    mkdir "$gadget/functions/$function_name"
+    ln -s "$gadget/functions/$function_name" "$config/$function_name"
+    printf '%s' "$udc" > "$gadget/UDC"
+}
+
+# Adds the network function to another gadget's c.1 before that gadget is bound.
+# Switches the combined device to the IAD triplet so Windows binds UsbNcm; skipped
+# when the link is disabled so a MTP-only gadget keeps its identity.
+attach() {
+    local other=$1
+    enabled || return 0
+    mkdir -p "$other/functions/$function_name"
+    [[ -L "$other/configs/c.1/$function_name" ]] \
+        || ln -s "$other/functions/$function_name" "$other/configs/c.1/$function_name"
+    printf '0xEF' > "$other/bDeviceClass"
+    printf '0x02' > "$other/bDeviceSubClass"
+    printf '0x01' > "$other/bDeviceProtocol"
+}
+
+# Removes it again after the other gadget is unbound, so its teardown can remove c.1.
+detach() {
+    local other=$1
+    [[ ! -L "$other/configs/c.1/$function_name" ]] || rm "$other/configs/c.1/$function_name" || :
+    [[ ! -d "$other/functions/$function_name" ]] || rmdir "$other/functions/$function_name" || :
+}
+
+# Brings the standalone link back once USB file transfer is off.
+resume() {
+    enabled || return 0
+    stopping && return 0
+    # An inactive unit may have been garbage-collected; start loads it again.
+    systemctl reset-failed armada-usb-network.service || :
+    systemctl --no-block start armada-usb-network.service
+}
+
+# The Freedom Control switch: saves the choice, then brings the link up or down at once.
+# While USB file transfer is on, the link lives in the MTP gadget, which is restarted so it
+# is rebuilt with or without the network function.
+set_switch() {
+    local value
+    case "${1:-}" in
+        on) value=1 ;;
+        off) value=0 ;;
+        *) printf 'usage: %s set {on|off}\n' "$0" >&2; exit 2 ;;
+    esac
+    mkdir -p "$(dirname "$switch_config")"
+    local tmp
+    tmp="$(mktemp "$switch_config.XXXXXX")"
+    printf 'enabled=%s\n' "$value" > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$switch_config"
+
+    local mtp=0 mtp_state
+    mtp_state="$(systemctl show -p ActiveState --value armada-mtp.service)" || return 1
+    case "$mtp_state" in
+        active|activating|reloading) mtp=1 ;;
+        inactive|failed|deactivating) mtp=0 ;;
+        *) printf 'armada-usb-network: cannot read armada-mtp.service state: %s\n' "$mtp_state" >&2; exit 1 ;;
+    esac
+    if ((mtp)); then
+        systemctl reset-failed armada-mtp.service
+    fi
+    if [[ "$value" == 0 ]]; then
+        systemctl stop armada-usb-ssh.socket armada-usb-network.service
+        ((mtp)) && systemctl restart armada-mtp.service
+        return 0
+    fi
+    supported || return 0
+    if ((mtp)); then
+        systemctl restart armada-mtp.service
+        ssh_resume
+    else
+        systemctl reset-failed armada-usb-network.service || :
+        systemctl start armada-usb-network.service
+    fi
+}
+
+# Prints the switch and whether the profile allows the link, for Freedom Control.
+state() {
+    local on=0 allowed=0
+    switched_on && on=1
+    supported && allowed=1
+    printf 'enabled=%s\nsupported=%s\n' "$on" "$allowed"
+}
+
+# Wait for sshd's stop or restart transaction before checking whether USB SSH
+# should take over. Starting the conflicting socket from ExecStopPost cancels restarts.
+ssh_resume() {
+    enabled || return 0
+    stopping && return 0
+    systemctl --no-block start armada-usb-ssh-resume.service
+}
+
+# Called by the deferred unit, after sshd has settled.
+ssh_start() {
+    enabled || return 0
+    stopping && return 0
+    local state
+    state="$(systemctl show -p ActiveState --value sshd.service)" || return 1
+    [[ -n "$state" ]] || return 1
+    case "$state" in
+        inactive|failed) systemctl --no-block start armada-usb-ssh.socket ;;
+        *) return 0 ;;
+    esac
+}
+
+case "${1:-}" in
+    enabled) enabled ;;
+    start) start ;;
+    stop) teardown ;;
+    attach) attach "${2:?gadget path}" ;;
+    detach) detach "${2:?gadget path}" ;;
+    resume) resume ;;
+    ssh-resume) ssh_resume ;;
+    ssh-start) ssh_start ;;
+    set) set_switch "${2:-}" ;;
+    state) state ;;
+    *)
+        printf 'usage: %s {enabled|start|stop|attach GADGET|detach GADGET|resume|ssh-resume|ssh-start|set on|off|state}\n' "$0" >&2
+        exit 2
+        ;;
+esac

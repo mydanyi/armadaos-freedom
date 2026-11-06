@@ -1,0 +1,17 @@
+# SSH on the USB network link only: the socket binds the tablet's USB address (also while
+# the link is being rebuilt) and drops every packet that is not from the USB subnet.
+# Key login only (see armada-usb-ssh@.service). It steps aside while the system-wide sshd
+# (the SSH switch in Freedom Control) runs; the restrictions above then no longer apply.
+[Unit]
+Description=Armada SSH over the USB network link
+Conflicts=sshd.service
+Before=sshd.service
+
+[Socket]
+ListenStream=172.16.42.1:22
+# Ingress only over usb0; also adds implicit BindsTo=/After= on the netdev unit.
+BindToDevice=usb0
+FreeBind=yes
+Accept=yes
+IPAddressAllow=172.16.42.0/24
+IPAddressDeny=any

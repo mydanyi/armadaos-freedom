@@ -44,6 +44,7 @@ BOTTOM_SCREEN_BRIGHTNESS_RESTORE_INTERVAL = 2
 BACKLIGHT_ROOT = Path("/sys/class/backlight")
 DRM_ROOT = Path("/sys/class/drm")
 DEVICE_ENV = os.environ.get("ARMADA_DEVICE_ENV", "/usr/libexec/armada/device-env")
+USB_NETWORK = "/usr/libexec/armada/usb-network"
 CONFIG_PATHS = {
     "power": Path("/etc/armada/power-profiles.conf"),
     "tweaks": Path("/etc/armada/game-tweaks.json"),
@@ -377,6 +378,24 @@ def action_set_mtp_enabled(request):
 
 def action_get_mtp_enabled(request):
     return {"enabled": mtp_enabled()}
+
+
+def usb_network_state():
+    result = subprocess.check_output([USB_NETWORK, "state"], text=True, timeout=5)
+    state = dict(line.split("=", 1) for line in result.splitlines() if "=" in line)
+    return {"enabled": state.get("enabled") == "1", "supported": state.get("supported") == "1"}
+
+
+def action_get_usb_network_enabled(request):
+    return usb_network_state()
+
+
+def action_set_usb_network_enabled(request):
+    enabled = request.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("invalid USB network enabled state")
+    run([USB_NETWORK, "set", "on" if enabled else "off"], timeout=30)
+    return usb_network_state()
 
 
 def available_sleep_modes():
@@ -873,9 +892,11 @@ ACTIONS = {
     "set_rgb": action_set_rgb,
     "get_ssh_enabled": action_get_ssh_enabled,
     "get_mtp_enabled": action_get_mtp_enabled,
+    "get_usb_network_enabled": action_get_usb_network_enabled,
     "inputplumber_intercept": action_inputplumber_intercept,
     "set_ssh_enabled": action_set_ssh_enabled,
     "set_mtp_enabled": action_set_mtp_enabled,
+    "set_usb_network_enabled": action_set_usb_network_enabled,
     "set_bottom_screen_enabled": action_set_bottom_screen_enabled,
     "set_bottom_screen_brightness": action_set_bottom_screen_brightness,
     "get_desktop_mode": action_get_desktop_mode,
