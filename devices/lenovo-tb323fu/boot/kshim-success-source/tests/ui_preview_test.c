@@ -348,6 +348,35 @@ static void AssertBootSlotHelpFits(lv_obj_t *Object, const char *Text,
         AssertBootSlotHelpFits(lv_obj_get_child(Object, (int32_t)Index), Text, Ui);
 }
 
+static lv_obj_t *FindLabel(lv_obj_t *object, const char *text)
+{
+    if (lv_obj_check_type(object, &lv_label_class) &&
+        strcmp(lv_label_get_text(object), text) == 0) return object;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(object); ++i) {
+        lv_obj_t *found = FindLabel(lv_obj_get_child(object, (int32_t)i), text);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+static void AssertNoticeVisible(const kshim_lvgl_t *ui, const char *message,
+                                const char *description)
+{
+    lv_obj_t *notice = FindLabel(lv_screen_active(), message);
+    lv_obj_t *detail = FindLabel(lv_screen_active(), description);
+    assert(notice != NULL && detail != NULL);
+    assert(lv_obj_is_visible(notice));
+    AssertBootSlotHelpFits(lv_screen_active(), message, ui);
+    AssertBootSlotHelpFits(lv_screen_active(), description, ui);
+    lv_area_t n, d, screen;
+    lv_obj_get_coords(notice, &n);
+    lv_obj_get_coords(detail, &d);
+    lv_obj_get_coords(lv_screen_active(), &screen);
+    assert(d.y2 < n.y1);
+    assert(n.x1 >= screen.x1 && n.x2 <= screen.x2 &&
+           n.y1 >= screen.y1 && n.y2 <= screen.y2);
+}
+
 static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
                          const kshim_framebuffer_t *Framebuffer,
                          uint32_t Width,uint32_t Height,const char *Tag)
@@ -398,6 +427,43 @@ static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
         AssertBootSlotHelpFits(lv_screen_active(),descriptions[initial],Ui);
         snprintf(stage,sizeof(stage),"star-%s-ab-%u-%u",Tag,current,page);
         (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+        if (page == 0 || page == 3) {
+            const char *failed = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            const char *restart = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+            lv_obj_t *description = FindLabel(lv_screen_active(), descriptions[initial]);
+            assert(description != NULL);
+            int32_t full_height = lv_obj_get_height(description);
+            kshim_lvgl_set_status(Ui, failed);
+            Advance(Ui, 80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            AssertNoticeVisible(Ui, failed, descriptions[initial]);
+            snprintf(stage,sizeof(stage),"star-%s-ab-%u-%u-error",Tag,current,page);
+            (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+            kshim_lvgl_set_status(Ui, restart);
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            AssertNoticeVisible(Ui, restart, descriptions[initial]);
+            lv_obj_t *notice = FindLabel(lv_screen_active(), restart);
+            kshim_lvgl_set_status(Ui, "");
+            Advance(Ui, 80);
+            assert(!lv_obj_is_visible(notice));
+            assert(lv_obj_get_height(description) == full_height);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            kshim_lvgl_set_status(Ui, failed);
+            lv_group_focus_obj(lv_group_get_obj_by_index(Ui->Group, 1));
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            assert(!lv_obj_is_visible(notice));
+            /* A page rebuild also clears the old transaction error. */
+            kshim_lvgl_set_status(Ui, failed);
+            assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,count,initial)==0);
+            kshim_lvgl_set_entry_roles(Ui,roles,count);
+            kshim_lvgl_set_page_title(Ui,title);
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            assert(!lv_obj_is_visible(notice));
+            assert(lv_obj_get_height(description) == full_height);
+        }
     }
 }
 static void RenderStarSettings(const char *Directory,kshim_lvgl_t *Ui,
@@ -435,6 +501,16 @@ static void RenderStarSettings(const char *Directory,kshim_lvgl_t *Ui,
         AssertBootSlotHelpFits(lv_screen_active(),descriptions[initial],Ui);
         snprintf(stage,sizeof(stage),"star-%s-%s",Tag,page?"device-select":"settings");
         (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+        if (!page) {
+            const char *failed=kshim_menu_text(KSHIM_TEXT_SETTINGS_SAVE_FAILED);
+            kshim_lvgl_set_status(Ui,failed);
+            Advance(Ui,80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            AssertNoticeVisible(Ui,failed,descriptions[initial]);
+            kshim_lvgl_set_status(Ui,"");
+            Advance(Ui,80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        }
     }
 }
 static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,

@@ -253,8 +253,18 @@ static int KshimDesignRelayout(void) {
         mDesignGeometry.notice=(kshim_design_rect_t){0};
         mDesignGeometry.status.y=mDesignGeometry.list.y;
         mDesignGeometry.detail.y=mDesignGeometry.status.y+mDesignGeometry.status.h+KshimDesignPx(14);
-        mDesignGeometry.detail.h=kshim_design_max(0,
-            mDesignGeometry.boot.y-KshimDesignPx(12)-mDesignGeometry.detail.y);
+        int32_t bottom=mDesignGeometry.boot.y-KshimDesignPx(12);
+        if(mNotice && lv_label_get_text(mNotice)[0]) {
+            lv_point_t size;
+            lv_text_get_size(&size,lv_label_get_text(mNotice),mStatusFont,
+                lv_obj_get_style_text_letter_space(mNotice,0),
+                lv_obj_get_style_text_line_space(mNotice,0),
+                mDesignGeometry.detail.w,LV_TEXT_FLAG_NONE);
+            mDesignGeometry.notice=(kshim_design_rect_t){
+                mDesignGeometry.detail.x,bottom-size.y,mDesignGeometry.detail.w,size.y};
+            bottom=mDesignGeometry.notice.y-KshimDesignPx(12);
+        }
+        mDesignGeometry.detail.h=kshim_design_max(0,bottom-mDesignGeometry.detail.y);
     }
     KshimDesignPlace(mPanel,mDesignGeometry.panel);
     lv_obj_set_style_radius(mPanel,mDesignGeometry.compact?0:KshimDesignPx(mMenuDesign.panel_radius),0);
