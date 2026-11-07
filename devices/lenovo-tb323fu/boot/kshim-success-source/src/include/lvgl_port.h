@@ -53,6 +53,7 @@ int kshim_lvgl_ready(const kshim_lvgl_t *Context);
 
 /* Consume one Power-confirmed menu choice; NONE means no new confirmation. */
 kshim_menu_action_t kshim_lvgl_take_selection(kshim_lvgl_t *Context);
+void kshim_lvgl_set_page_title(kshim_lvgl_t *Context, const char *Text);
 void kshim_lvgl_set_status(kshim_lvgl_t *Context, const char *Text);
 void kshim_lvgl_set_countdown(kshim_lvgl_t *Context, uint32_t timeout_ms);
 

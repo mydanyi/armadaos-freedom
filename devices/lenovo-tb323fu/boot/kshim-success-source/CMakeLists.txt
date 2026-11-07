@@ -193,7 +193,7 @@ if(CONFIG_KSHIM_STORAGE_ENTRY_PROBE OR CONFIG_KSHIM_UFS_NATIVE_IO)
     endif()
 endif()
 # Storage formats are shared by the later hardware backends.
-list(APPEND SRC_FILES src/core/storage_block.c src/core/storage_config.c
+list(APPEND SRC_FILES src/core/storage_block.c src/core/storage_ab.c src/core/storage_config.c
     src/core/storage_settings.c src/drivers/storage_ufs.c src/drivers/storage_sdhci.c)
 
 if(CONFIG_KSHIM_SMP)

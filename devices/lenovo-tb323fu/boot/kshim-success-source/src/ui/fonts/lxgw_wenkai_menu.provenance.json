@@ -4,12 +4,12 @@
   "license": "SIL Open Font License 1.1 (lxgw_wenkai_menu-OFL.txt)",
   "coverage": "menu preset: ASCII, Latin-1, Latin Extended-A, general punctuation, CJK punctuation, full-width Latin/punctuation, plus the characters of src/core/menu_locale.c and src/include/menu_text.h",
   "coverage_mode": "menu",
-  "glyphs": 710,
-  "raw_bytes": 146752,
-  "compressed_bytes": 97436,
-  "blob_sha256": "c70b2dea50c4a305ec7976708ae835f69bf9e05265ad8a4358fe507a7737a675",
+  "glyphs": 769,
+  "raw_bytes": 168588,
+  "compressed_bytes": 113567,
+  "blob_sha256": "6d6f08fcb3f7d528562d76ad256c4f36abe9937a2b96e207ab4989b472b9e55c",
   "generator": "tools/gen_ui_font.py",
-  "requested_codepoints": 771,
+  "requested_codepoints": 830,
   "missing_codepoints": [
     "0x00AD",
     "0x200C",
@@ -73,5 +73,5 @@
     "0x3032",
     "0xFF00"
   ],
-  "required_characters": 696
+  "required_characters": 335
 }

@@ -78,6 +78,9 @@ struct kshim_ufs_lun {
 int kshim_ufs_claim(struct kshim_ufs_host *, const struct kshim_ufs_ops *,
                     void *arena, size_t arena_bytes, uint64_t dma_address);
 int kshim_ufs_nop(struct kshim_ufs_host *);
+/* bBootLunEn: 1 selects Boot LU A, 2 selects Boot LU B. */
+int kshim_ufs_get_boot_lun(struct kshim_ufs_host *, uint32_t *);
+int kshim_ufs_set_boot_lun(struct kshim_ufs_host *, uint32_t);
 /* Explicit opt-in device power preparation: call only after a successful
  * claim and NOP, and always pair with release. It never runs from claim or
  * open_lun. ACTIVE returns immediately with no power command; SLEEP and

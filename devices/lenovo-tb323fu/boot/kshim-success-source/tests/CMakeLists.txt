@@ -296,6 +296,7 @@ kshim_test(boot_settings_test boot_settings_test.c
 # gate with the debug console forced off.
 kshim_test(platform_settings_menu_test platform_menu_test.c)
 target_compile_definitions(platform_settings_menu_test PRIVATE
+    CONFIG_KSHIM_UFS_SETTINGS=1
     CONFIG_KSHIM_MENU_SESSION_SETTINGS=1
     CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1
     CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1
@@ -418,6 +419,8 @@ target_include_directories(console_disabled_test BEFORE PRIVATE
 target_link_libraries(console_disabled_test PRIVATE crdk)
 
 kshim_test(storage_block_test storage_block_test.c "${KSHIM_ROOT}/src/core/storage_block.c")
+kshim_test(storage_ab_test storage_ab_test.c "${KSHIM_ROOT}/src/core/storage_ab.c"
+    "${KSHIM_ROOT}/src/core/storage_block.c")
 kshim_test(storage_config_test storage_config_test.c "${KSHIM_ROOT}/src/core/storage_block.c"
     "${KSHIM_ROOT}/src/core/storage_config.c")
 kshim_test(storage_probe_test storage_probe_test.c "${KSHIM_ROOT}/src/drivers/storage_probe.c")

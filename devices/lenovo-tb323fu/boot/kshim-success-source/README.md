@@ -36,6 +36,10 @@ python3 tools/build_runtime.py --config configs/tb323fu_unified_defconfig --out 
 
 两个机型配置都启用 STAR_CHART、简体中文、实体按键、高级操作、设备信息与持久化设置。设置保存到机身 UFS 尾部 2 GiB 备份分区内的专用配置区，该配置区须由安装器预先准备。四代关闭调试控制台与启动计时；五代启用启动计时。Linux 与 Android 菜单条目来自所选机型的 manifest 与载荷。
 
+四代、五代的“高级启动模式”提供“A/B槽位切换”。启动器与 Android 共用设备的 A/B 槽位，A、B 不分别代表 Android 和 Linux。页面显示当前槽位，确认页同时显示当前槽和目标槽，默认选中“返回”。读取槽位信息后，选择另一可用槽并确认重启；当前槽和缺少启动链文件的槽不可选择。切换前检查所有 LUN 的主备 GPT、当前槽、UFS Boot ID 对应关系及待处理恢复/OTA 状态，更新槽位属性、分区类型 GUID 和 Boot LUN 后读回核验。I/O 失败会尝试恢复原状态；无法确认恢复成功时禁止继续交接系统。此操作需要持续供电，不能保证断电时跨 LUN 更新的原子性。TB710FU 尚无对应的原生 UFS 后端，不显示该入口。
+
+A/B 切换不重打包或改写 boot 内容。启动器本身更新后，仍须经系统包构建与安装器的 boot 重打包、适用签名和校验流程；4 MiB 的 `kShimC.bin` 不是可直接刷入 boot 分区的镜像。
+
 ### 五代外置 initramfs 配置
 
 `configs/tb323fu_unified_defconfig` 是面向外置 initrd Manifest 工作的 TB323FU 配置。它带有共享启动器菜单：可持久保存的设备选择、默认启动项与语言设置，以及只读的设备信息行。默认启动项可选择“记住上一次启动的系统”。其余选项均保留：STAR_CHART 风格、UI 逆时针旋转 270 度、243712 字节 LVGL 缓冲、无入场动画、带条目详情的简体中文、Android 基座措辞、带 QCOM 重启目标的电源与高级操作、启动计时，以及两个去抖采样的 SPMI 按键；触屏、SMP、UEFI 测试菜单与 QEMU 平台保持关闭。

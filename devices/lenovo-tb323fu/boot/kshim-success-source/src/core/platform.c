@@ -24,6 +24,12 @@
 #include <device_info.h>
 #include <boot_settings.h>
 #include <boot_metrics.h>
+#if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
+#include <storage_settings_native.h>
+#define KSHIM_AB_MENU 1
+#else
+#define KSHIM_AB_MENU 0
+#endif
 #if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
 #include <qcom_reboot.h>
 #endif
@@ -107,17 +113,8 @@
 /* Read-only Device info page: one main row plus a fixed set of field rows and
  * a final Back row. Values are formatted into menu-owned buffers so the
  * pointers stay valid for the whole menu session. */
-#define KSHIM_INFO_FIELD_COUNT 7
+#define KSHIM_INFO_FIELD_COUNT 5
 #define KSHIM_INFO_VALUE_LEN 192
-/* Compatible values render as at most three whole-entry lines; each line is
- * clipped to this many ASCII characters before the shared ellipsis marker. */
-#define KSHIM_INFO_COMPATIBLE_LINES 3
-#define KSHIM_INFO_COMPATIBLE_LINE_LEN 44
-/* The DT model shares the same readable bound so a long string cannot fill the
- * page; any cut still lands on a UTF-8 boundary. */
-#define KSHIM_INFO_MODEL_MAX 120
-#define KSHIM_INFO_ELLIPSIS "\xe2\x80\xa6" /* U+2026, 3 UTF-8 bytes */
-
 /* Enables the runtime language page and role driven payload labels. Guarded so
  * the plain (switch off) builds never reference the locale module. */
 #if defined(CONFIG_KSHIM_MENU_LANGUAGE_SWITCH) && CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
@@ -596,6 +593,7 @@ enum menu_action {
      * return a payload. */
     MENU_SETTINGS, MENU_DEVICE, MENU_DEFAULT,
     MENU_DEVICE_SET, MENU_DEFAULT_SET, MENU_UNAVAILABLE,
+    MENU_AB, MENU_AB_CHOOSE, MENU_AB_COMMIT,
 };
 struct menu_page {
     const char *names[KSHIM_MENU_MAX_ENTRIES];
@@ -611,7 +609,7 @@ struct menu_page {
 enum menu_page_id {
     MENU_PAGE_MAIN = 0, MENU_PAGE_ADVANCED = 1, MENU_PAGE_LANGUAGE = 2,
     MENU_PAGE_INFO = 3, MENU_PAGE_SETTINGS = 4, MENU_PAGE_DEVICE = 5,
-    MENU_PAGE_DEFAULT = 6, MENU_PAGE_COUNT = 7
+    MENU_PAGE_DEFAULT = 6, MENU_PAGE_AB = 7, MENU_PAGE_AB_CONFIRM = 8, MENU_PAGE_COUNT = 9
 };
 static struct kshim_settings_session *BoundSettings;
 void kshim_platform_bind_settings(struct kshim_settings_session *session)
@@ -660,10 +658,24 @@ struct menu_selection {
     size_t candidate_caller[KSHIM_MENU_MAX_ENTRIES];
     size_t candidate_count;
     /* Focus memory for the settings pages. */
-    size_t settings_row, language_entry_row, device_entry_row, default_entry_row;
+    size_t settings_row, language_entry_row, device_entry_row, default_entry_row, ab_entry_row;
     /* Row names that carry the current value and must outlive the fill. */
     char setting_device_name[KSHIM_INFO_VALUE_LEN];
     char setting_default_name[KSHIM_INFO_VALUE_LEN];
+    char setting_language_name[KSHIM_INFO_VALUE_LEN];
+    char device_auto_name[KSHIM_INFO_VALUE_LEN];
+    char setting_descriptions[3][576];
+    int current_slot;
+    char ab_overview[1536];
+    char ab_details[2][1536];
+    char ab_cancel[1536];
+    char ab_confirm[1536];
+    char ab_confirm_cancel[1536];
+#if KSHIM_AB_MENU
+    struct kshim_ab_status ab;
+    unsigned ab_target;
+    int ab_restart_required;
+#endif
 };
 /* A settings save changes UI state only after the storage layer has flushed
  * and read back the selected slot. Missing bindings preserve legacy behavior. */
@@ -709,6 +721,8 @@ static int menu_append(struct menu_page *page, const char *name, const char *des
     case MENU_SETTINGS:
     case MENU_DEVICE:
     case MENU_DEFAULT:
+    case MENU_AB:
+    case MENU_AB_CHOOSE:
         page->action_labels[row] = KSHIM_MENU_ACTION_ENTER;
         break;
     /* A field confirmation is read-only and returns home, so its label is the
@@ -728,6 +742,7 @@ static int menu_append(struct menu_page *page, const char *name, const char *des
         page->action_labels[row] = kshim_menu_text(KSHIM_TEXT_LANGUAGE_SELECT);
         break;
     case MENU_RESET:
+    case MENU_AB_COMMIT:
         page->action_labels[row] = KSHIM_MENU_ACTION_RESTART;
         break;
     case MENU_OFF:
@@ -740,58 +755,52 @@ static int menu_append(struct menu_page *page, const char *name, const char *des
     page->payloads[row] = (uint8_t)payload;
     return 0;
 }
-/* Append the U+2026 ellipsis when the buffer still has room for it. */
-static void info_append_ellipsis(char *buffer, size_t capacity)
-{
-    size_t used = strlen(buffer);
-    const size_t mark = sizeof(KSHIM_INFO_ELLIPSIS) - 1;
-
-    if (used + mark + 1 <= capacity) {
-        memcpy(buffer + used, KSHIM_INFO_ELLIPSIS, mark);
-        buffer[used + mark] = '\0';
-    } else if (capacity > mark + 1) {
-        memcpy(buffer + capacity - 1 - mark, KSHIM_INFO_ELLIPSIS, mark);
-        buffer[capacity - 1] = '\0';
-    }
-}
 static void info_unknown(char *buffer, size_t capacity)
 {
     snprintf(buffer, capacity, "%s", kshim_menu_text(KSHIM_TEXT_UNKNOWN));
 }
-/* Longest UTF-8 prefix of a NUL-terminated string that fits in `limit` bytes
- * without splitting a multibyte sequence. */
-static size_t info_utf8_bound(const char *text, size_t limit)
+static const char *menu_slot_name(int slot)
 {
-    size_t len = 0;
-
-    while (len < limit && text[len] != '\0') {
-        unsigned char lead = (unsigned char)text[len];
-        size_t width = lead < 0x80 ? 1 :
-                       (lead & 0xE0) == 0xC0 ? 2 :
-                       (lead & 0xF0) == 0xE0 ? 3 :
-                       (lead & 0xF8) == 0xF0 ? 4 : 1;
-
-        if (len + width > limit)
-            break;
-        len += width;
+    return kshim_menu_text(slot == 0 ? KSHIM_TEXT_SLOT_A :
+                           slot == 1 ? KSHIM_TEXT_SLOT_B : KSHIM_TEXT_UNKNOWN);
+}
+static void menu_slot_description(const struct menu_selection *menu, char *buffer,
+                                   size_t capacity, const char *body, int target)
+{
+    char current[96], next[96];
+    snprintf(current, sizeof(current), kshim_menu_text(KSHIM_TEXT_SLOT_STATE_FMT),
+             menu_slot_name(menu->current_slot));
+    if (target >= 0) {
+        snprintf(next, sizeof(next), kshim_menu_text(KSHIM_TEXT_SLOT_TARGET_FMT),
+                 menu_slot_name(target));
+        snprintf(buffer, capacity, "%s\n%s\n\n%s", current, next, body);
+    } else {
+        snprintf(buffer, capacity, "%s\n\n%s", current, body);
     }
-    return len;
+}
+static void menu_refresh_slot(struct menu_selection *menu)
+{
+    menu->current_slot = -1;
+#if KSHIM_AB_MENU
+    struct kshim_ab_status status;
+    if (storage_settings_native_ab_supported() &&
+        storage_settings_native_ab_status(&status) == 0 && status.current < 2)
+        menu->current_slot = (int)status.current;
+#endif
+    menu_slot_description(menu, menu->ab_overview, sizeof(menu->ab_overview),
+                          kshim_menu_text(KSHIM_TEXT_AB_DESC), -1);
 }
 /* Build the bounded read-only summary from the fixed field set and add the one
  * main-menu Device info row before the power rows. Every value derives only
  * from the caller's read-only record and the already probed resources. */
-static int menu_fill_device_info(struct menu_selection *menu)
+static int menu_format_device_info(struct menu_selection *menu)
 {
     const struct device_info *info = menu->info;
     static const kshim_menu_text_id labels[KSHIM_INFO_FIELD_COUNT] = {
-        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
-        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
-        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
+        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_RAM,
+        KSHIM_TEXT_INFO_SLOT, KSHIM_TEXT_INFO_VERSION,
     };
     size_t i;
-
-    /* Board identity comes only from the exact enum; a generic SoC never
-     * implies TB322FC. */
     snprintf(menu->info_values[0], sizeof(menu->info_values[0]), "%s",
              info->board == DEVICE_BOARD_TB322FC ? "TB322FC" :
              info->board == DEVICE_BOARD_TB323FU ? "TB323FU" :
@@ -800,108 +809,15 @@ static int menu_fill_device_info(struct menu_selection *menu)
              info->soc == DEVICE_SOC_SM8750 ? "SM8750" :
              info->soc == DEVICE_SOC_SM8850 ? "SM8850" :
              kshim_menu_text(KSHIM_TEXT_UNKNOWN));
-
-    /* Original DT model, bounded to a readable length on a UTF-8 boundary with
-     * a visible ellipsis when cut. The record guarantees NUL termination. */
-    if (info->model_known && info->model[0]) {
-        size_t cap = sizeof(menu->info_values[2]);
-        size_t limit = cap - 1;
-        size_t len;
-        bool cut;
-
-        if (limit > KSHIM_INFO_MODEL_MAX) limit = KSHIM_INFO_MODEL_MAX;
-        len = info_utf8_bound(info->model, limit);
-        cut = info->model_truncated || info->model[len] != '\0';
-        memcpy(menu->info_values[2], info->model, len);
-        menu->info_values[2][len] = '\0';
-        if (cut)
-            info_append_ellipsis(menu->info_values[2], cap);
-    } else {
-        info_unknown(menu->info_values[2], sizeof(menu->info_values[2]));
-    }
-
-    /* Original compatible list: walk the raw NUL-separated list by its length,
-     * bounded by the record's own array, joining whole entries with newlines.
-     * Never treat the blob as one %s string. At most three entry lines render;
-     * a clipped entry keeps its original prefix and the shared ellipsis. */
-    if (info->compatible_known && info->compatible_length) {
-        char *out = menu->info_values[3];
-        const size_t cap = sizeof(menu->info_values[3]);
-        size_t total = info->compatible_length;
-        size_t off = 0, used = 0;
-        bool any = false, cut = info->compatible_truncated;
-        unsigned lines = 0;
-
-        /* A malformed length must never read past the record's own array. */
-        if (total > sizeof(info->compatible)) {
-            total = sizeof(info->compatible);
-            cut = true;
-        }
-        while (off < total && lines < KSHIM_INFO_COMPATIBLE_LINES) {
-            size_t remaining = total - off;
-            size_t len = 0;
-            size_t entry;
-
-            while (len < remaining && info->compatible[off + len] != '\0')
-                len++;
-            if (len == 0) { off += 1; continue; }         /* skip empty entry */
-            entry = len;
-            if (entry > KSHIM_INFO_COMPATIBLE_LINE_LEN) {
-                entry = KSHIM_INFO_COMPATIBLE_LINE_LEN;
-                cut = true;
-            }
-            if (any)
-                out[used++] = '\n';
-            memcpy(out + used, info->compatible + off, entry);
-            used += entry;
-            any = true;
-            ++lines;
-            if (len == remaining) { cut = true; break; }  /* missing terminal NUL */
-            if (entry != len) break;                      /* clipped entry line */
-            off += len + 1;
-        }
-        if (off < total) cut = true;                      /* stopped at the line cap */
-        out[used] = '\0';
-        if (!any)
-            info_unknown(out, cap);
-        else if (cut)
-            info_append_ellipsis(out, cap);
-    } else {
-        info_unknown(menu->info_values[3], sizeof(menu->info_values[3]));
-    }
-
-    /* DT-reported RAM as a whole MiB integer. The value stays a bare number so
-     * the summary's own localized field label carries the "DT reported" note;
-     * it is never presented as physical or available RAM. */
-    if (info->ram_known) {
-        snprintf(menu->info_values[4], sizeof(menu->info_values[4]), "%llu MiB",
-                 (unsigned long long)(info->dt_reported_ram_bytes /
-                                      (UINT64_C(1024) * UINT64_C(1024))));
-    } else {
-        info_unknown(menu->info_values[4], sizeof(menu->info_values[4]));
-    }
-
-    /* Resolution and stride from the already probed resource only; no MMIO. */
-    {
-        const struct kshim_resources *res = kshim_resources_get();
-        const kshim_framebuffer_config_t *fb = res ? &res->framebuffer : NULL;
-
-        if (res && res->splash_status == 0 && fb->width && fb->height && fb->stride) {
-            snprintf(menu->info_values[5], sizeof(menu->info_values[5]),
-                     "%ux%u stride %u", (unsigned)fb->width, (unsigned)fb->height,
-                     (unsigned)fb->stride);
-        } else {
-            info_unknown(menu->info_values[5], sizeof(menu->info_values[5]));
-        }
-    }
-
-    const char *version = KSHIM_INFO_VERSION_TEXT;
-
-    if (version)
-        snprintf(menu->info_values[6], sizeof(menu->info_values[6]), "%s",
-                 version);
+    if (info->ram_known)
+        snprintf(menu->info_values[2], sizeof(menu->info_values[2]), "%llu MiB",
+                 (unsigned long long)(info->dt_reported_ram_bytes / (UINT64_C(1024) * 1024)));
     else
-        info_unknown(menu->info_values[6], sizeof(menu->info_values[6]));
+        info_unknown(menu->info_values[2], sizeof(menu->info_values[2]));
+    snprintf(menu->info_values[3], sizeof(menu->info_values[3]), "%s",
+             menu_slot_name(menu->current_slot));
+    snprintf(menu->info_values[4], sizeof(menu->info_values[4]), "%s",
+             KSHIM_INFO_VERSION_TEXT ? KSHIM_INFO_VERSION_TEXT : kshim_menu_text(KSHIM_TEXT_UNKNOWN));
 
     /* One bounded "label: value" block per field, rows joined by newlines; the
      * aggregate is the info page description. A short buffer is the existing
@@ -919,6 +835,11 @@ static int menu_fill_device_info(struct menu_selection *menu)
         }
     }
 
+    return 0;
+}
+static int menu_fill_device_info(struct menu_selection *menu)
+{
+    if (menu_format_device_info(menu)) return -1;
     /* The home row precedes the power rows and remembers its focus index. */
     menu->device_info_row = menu->pages[0].count;
     if (menu_append(&menu->pages[0], kshim_menu_text(KSHIM_TEXT_INFO_LABEL),
@@ -936,7 +857,7 @@ static const char *settings_board_name(enum device_board board)
 {
     if (board == DEVICE_BOARD_TB322FC) return kshim_menu_text(KSHIM_TEXT_BOARD_TB322FC_NAME);
     if (board == DEVICE_BOARD_TB323FU) return kshim_menu_text(KSHIM_TEXT_BOARD_TB323FU_NAME);
-    return kshim_menu_text(KSHIM_TEXT_UNKNOWN);
+    return kshim_menu_text(KSHIM_TEXT_DEVICE_UNKNOWN);
 }
 /* Localized platform code for a board. */
 static const char *settings_board_code(enum device_board board)
@@ -1161,6 +1082,15 @@ static void settings_fill_device_name(const struct menu_selection *menu,
     }
 }
 /* Fill the Settings "default system" row name with the current value. */
+static const char *settings_system_name(kshim_menu_role_t role)
+{
+    switch (role) {
+    case KSHIM_MENU_ROLE_ANDROID: return kshim_menu_text(KSHIM_TEXT_SYSTEM_ANDROID);
+    case KSHIM_MENU_ROLE_INTERNAL: return kshim_menu_text(KSHIM_TEXT_SYSTEM_INTERNAL);
+    case KSHIM_MENU_ROLE_TF: return kshim_menu_text(KSHIM_TEXT_SYSTEM_TF);
+    default: return kshim_menu_role_name(role, kshim_menu_text(KSHIM_TEXT_DEFAULT_MANIFEST));
+    }
+}
 static void settings_fill_default_name(const struct menu_selection *menu,
                                        char *buffer, size_t capacity)
 {
@@ -1168,14 +1098,13 @@ static void settings_fill_default_name(const struct menu_selection *menu,
     if (menu->boot.default_target == BOOT_TARGET_LAST)
         value = kshim_menu_text(KSHIM_TEXT_DEFAULT_LAST);
     else if (menu->boot.default_target == BOOT_TARGET_ANDROID)
-        value = kshim_menu_role_name(KSHIM_MENU_ROLE_ANDROID, NULL);
+        value = kshim_menu_text(KSHIM_TEXT_SYSTEM_ANDROID);
     else if (menu->boot.default_target == BOOT_TARGET_INTERNAL)
-        value = kshim_menu_role_name(KSHIM_MENU_ROLE_INTERNAL, NULL);
+        value = kshim_menu_text(KSHIM_TEXT_SYSTEM_INTERNAL);
     else if (menu->boot.default_target == BOOT_TARGET_TF)
-        value = kshim_menu_role_name(KSHIM_MENU_ROLE_TF, NULL);
+        value = kshim_menu_text(KSHIM_TEXT_SYSTEM_TF);
     else if (menu->caller_roles && menu->original_initial < menu->caller_count)
-        value = kshim_menu_role_name(menu->caller_roles[menu->original_initial],
-                                     kshim_menu_text(KSHIM_TEXT_DEFAULT_MANIFEST));
+        value = settings_system_name(menu->caller_roles[menu->original_initial]);
     else
         value = kshim_menu_text(KSHIM_TEXT_DEFAULT_MANIFEST);
     snprintf(buffer, capacity, kshim_menu_text(KSHIM_TEXT_SETTINGS_DEFAULT_FMT), value);
@@ -1299,16 +1228,27 @@ static int menu_fill_settings(struct menu_selection *menu)
             menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_FASTBOOT, KSHIM_MENU_DESC_FASTBOOT,
                         MENU_FASTBOOT, 0, KSHIM_MENU_ROLE_FASTBOOT) ||
             menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_EDL, KSHIM_MENU_DESC_EDL,
-                        MENU_EDL, 0, KSHIM_MENU_ROLE_EDL) ||
-            menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
+                        MENU_EDL, 0, KSHIM_MENU_ROLE_EDL))
+            return -1;
+#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
+        menu->ab_entry_row = menu->pages[MENU_PAGE_ADVANCED].count;
+        if (storage_settings_native_ab_supported() &&
+            menu_append(&menu->pages[MENU_PAGE_ADVANCED], kshim_menu_text(KSHIM_TEXT_AB),
+                menu->ab_overview, MENU_AB, 0, KSHIM_MENU_ROLE_BOOT_SLOT))
+            return -1;
+#endif
+        if (menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
                         MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
             return -1;
     }
 
+    menu_slot_description(menu, menu->ab_overview, sizeof(menu->ab_overview),
+                          kshim_menu_text(KSHIM_TEXT_AB_DESC), -1);
+
     /* Settings entry row on the main page. */
     menu->settings_row = menu->pages[MENU_PAGE_MAIN].count;
     if (menu_append(&menu->pages[MENU_PAGE_MAIN], KSHIM_MENU_LABEL_SETTINGS,
-                    settings_storage_description(menu), MENU_SETTINGS, 0,
+                    kshim_menu_text(KSHIM_TEXT_SETTINGS_HOME_DESC), MENU_SETTINGS, 0,
                     KSHIM_MENU_ROLE_SETTINGS))
         return -1;
 
@@ -1338,18 +1278,31 @@ static int menu_fill_settings(struct menu_selection *menu)
         return -1;
 #if KSHIM_MENU_LANGUAGE_ENABLED
     menu->language_entry_row = menu->pages[MENU_PAGE_SETTINGS].count;
-    if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_MENU_TEXT_LANGUAGE_LABEL,
+    snprintf(menu->setting_language_name, sizeof(menu->setting_language_name),
+             kshim_menu_text(KSHIM_TEXT_SETTINGS_LANGUAGE_FMT),
+             kshim_menu_text(KSHIM_TEXT_LANGUAGE_STATE));
+    if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], menu->setting_language_name,
                     kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC), MENU_LANGUAGE, 0,
                     KSHIM_MENU_ROLE_LANGUAGE))
         return -1;
 #endif
-    if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_MENU_ACTION_BACK,
-                    KSHIM_MENU_DESC_BACK_PARENT,
+    if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_STR_BACK,
+                    KSHIM_MENU_DESC_BACK,
                     MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
         return -1;
 
+    for (size_t row = 0; row + 1 < menu->pages[MENU_PAGE_SETTINGS].count; ++row) {
+        snprintf(menu->setting_descriptions[row], sizeof(menu->setting_descriptions[row]),
+                 "%s\n\n%s", menu->pages[MENU_PAGE_SETTINGS].descriptions[row],
+                 settings_storage_description(menu));
+        menu->pages[MENU_PAGE_SETTINGS].descriptions[row] = menu->setting_descriptions[row];
+    }
+
     /* Device page: auto / TB322FC / TB323FU / back. */
-    if (menu_append(&menu->pages[MENU_PAGE_DEVICE], KSHIM_MENU_LABEL_DEV_AUTO,
+    snprintf(menu->device_auto_name, sizeof(menu->device_auto_name),
+             kshim_menu_text(KSHIM_TEXT_DEVICE_AUTO_FMT),
+             settings_board_name(menu->info ? menu->info->board : DEVICE_BOARD_UNKNOWN));
+    if (menu_append(&menu->pages[MENU_PAGE_DEVICE], menu->device_auto_name,
                     kshim_menu_text(KSHIM_TEXT_DEVICE_AUTO_DESC), MENU_DEVICE_SET, BOOT_DEVICE_AUTO,
                     KSHIM_MENU_ROLE_DEVICE_AUTO) ||
         menu_append(&menu->pages[MENU_PAGE_DEVICE], KSHIM_MENU_LABEL_DEV_322,
@@ -1358,8 +1311,8 @@ static int menu_fill_settings(struct menu_selection *menu)
         menu_append(&menu->pages[MENU_PAGE_DEVICE], KSHIM_MENU_LABEL_DEV_323,
                     kshim_menu_text(KSHIM_TEXT_DEVICE_TB323FU_DESC), MENU_DEVICE_SET, BOOT_DEVICE_TB323FU,
                     KSHIM_MENU_ROLE_DEVICE_TB323FU) ||
-        menu_append(&menu->pages[MENU_PAGE_DEVICE], KSHIM_MENU_ACTION_BACK,
-                    KSHIM_MENU_DESC_BACK_PARENT,
+        menu_append(&menu->pages[MENU_PAGE_DEVICE], kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS),
+                    kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS_DESC),
                     MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
         return -1;
     menu->pages[MENU_PAGE_DEVICE].initial = (size_t)menu->boot.device_choice;
@@ -1513,6 +1466,7 @@ static int menu_build(struct menu_selection *menu, const char *const *names,
     menu->device_info_row = 0;
     menu->settings = settings;
     menu->store = NULL;
+    menu->current_slot = -1;
     menu->payload_boards = payload_boards;
     /* The legacy menu has no board filtering, so its initial row is always a
      * valid automatic target; the settings path proves that separately. */
@@ -1549,6 +1503,12 @@ static int menu_activate(struct menu_selection *menu, size_t index,
 {
     struct menu_page *page = &menu->pages[menu->page];
     enum menu_action action = page->actions[index];
+#if KSHIM_AB_MENU
+    if (menu->ab_restart_required && action != MENU_RESET && action != MENU_OFF) {
+        *failure = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+        return 0;
+    }
+#endif
     *failure = NULL;
     if (action == MENU_PAYLOAD) {
         *selected = page->payloads[index];
@@ -1557,18 +1517,21 @@ static int menu_activate(struct menu_selection *menu, size_t index,
     /* This flag belongs to the whole menu session, not to an individual page. */
     menu->timeout = 0;
     if (action == MENU_ADVANCED) {
+        menu_refresh_slot(menu);
         menu->page = 1U;
         menu->pages[1].initial = 0U;
         return 2;
     }
     if (action == MENU_DEVICE_INFO) {
+        menu_refresh_slot(menu);
+        if (menu_format_device_info(menu)) return 0;
         /* Snapshot the fully built home page (info row plus the power rows) so
          * every row keeps its exact name, role, payload and position; only the
          * info row becomes the read-only summary with a localized Back. */
         menu->pages[3] = menu->pages[0];
         menu->pages[3].descriptions[menu->device_info_row] = menu->info_summary;
         menu->pages[3].actions[menu->device_info_row] = MENU_INFO_FIELD;
-        menu->pages[3].action_labels[menu->device_info_row] = KSHIM_MENU_ACTION_BACK;
+        menu->pages[3].action_labels[menu->device_info_row] = KSHIM_STR_BACK;
         menu->pages[3].initial = menu->device_info_row;
         menu->page = 3U;
         return 2;
@@ -1585,6 +1548,13 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         if (menu->settings) {
             /* Every BACK returns to its immediate parent layer. */
             switch (from) {
+            case MENU_PAGE_AB:
+                menu->page = MENU_PAGE_ADVANCED;
+                menu->pages[MENU_PAGE_ADVANCED].initial = menu->ab_entry_row;
+                break;
+            case MENU_PAGE_AB_CONFIRM:
+                menu->page = MENU_PAGE_AB;
+                break;
             case MENU_PAGE_ADVANCED:
                 menu->page = MENU_PAGE_MAIN;
                 menu->pages[MENU_PAGE_MAIN].initial = menu->advanced_row;
@@ -1627,6 +1597,74 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         menu->pages[MENU_PAGE_SETTINGS].initial = 0U;
         return 2;
     }
+#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
+    if (action == MENU_AB) {
+        if (!menu->psci_ready || storage_settings_native_ab_status(&menu->ab)) {
+            *failure = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            return 0;
+        }
+        menu->current_slot = (int)menu->ab.current;
+        struct menu_page *ab = &menu->pages[MENU_PAGE_AB];
+        memset(ab, 0, sizeof(*ab));
+        for (unsigned slot = 0; slot < 2; ++slot) {
+            int current = slot == menu->ab.current;
+            char body[1152];
+            if (current)
+                snprintf(body, sizeof(body), kshim_menu_text(KSHIM_TEXT_AB_CURRENT), menu_slot_name(slot));
+            else if (menu->ab.bootable[slot])
+                snprintf(body, sizeof(body), kshim_menu_text(KSHIM_TEXT_AB_TARGET_DESC),
+                         menu_slot_name(menu->current_slot), menu_slot_name(slot), menu_slot_name(slot));
+            else
+                snprintf(body, sizeof(body), "%s", kshim_menu_text(KSHIM_TEXT_AB_UNAVAILABLE));
+            menu_slot_description(menu, menu->ab_details[slot], sizeof(menu->ab_details[slot]), body, -1);
+            menu_append(ab, kshim_menu_text(current ?
+                    (slot ? KSHIM_TEXT_AB_CURRENT_B : KSHIM_TEXT_AB_CURRENT_A) :
+                    (menu->ab.bootable[slot] ? (slot ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A) :
+                     (slot ? KSHIM_TEXT_AB_UNAVAILABLE_B : KSHIM_TEXT_AB_UNAVAILABLE_A))),
+                menu->ab_details[slot],
+                current || !menu->ab.bootable[slot] ? MENU_UNAVAILABLE : MENU_AB_CHOOSE,
+                slot, KSHIM_MENU_ROLE_BOOT_SLOT);
+        }
+        menu_slot_description(menu, menu->ab_cancel, sizeof(menu->ab_cancel),
+                              kshim_menu_text(KSHIM_TEXT_AB_BACK_DESC), -1);
+        menu_append(ab, kshim_menu_text(KSHIM_TEXT_AB_BACK), menu->ab_cancel,
+                    MENU_BACK, 0, KSHIM_MENU_ROLE_BOOT_SLOT);
+        ab->initial = 2;
+        menu->timeout = 0;
+        menu->page = MENU_PAGE_AB;
+        return 2;
+    }
+    if (action == MENU_AB_CHOOSE) {
+        menu->ab_target = page->payloads[index];
+        struct menu_page *confirm = &menu->pages[MENU_PAGE_AB_CONFIRM];
+        memset(confirm, 0, sizeof(*confirm));
+        char body[1152];
+        snprintf(body, sizeof(body), kshim_menu_text(KSHIM_TEXT_AB_CONFIRM), menu_slot_name(menu->ab_target));
+        menu_slot_description(menu, menu->ab_confirm, sizeof(menu->ab_confirm), body, (int)menu->ab_target);
+        menu_slot_description(menu, menu->ab_confirm_cancel, sizeof(menu->ab_confirm_cancel),
+                              kshim_menu_text(KSHIM_TEXT_AB_CONFIRM_BACK_DESC), (int)menu->ab_target);
+        menu_append(confirm, kshim_menu_text(KSHIM_TEXT_ACTION_SWITCH_RESTART),
+            menu->ab_confirm, MENU_AB_COMMIT, menu->ab_target, KSHIM_MENU_ROLE_BOOT_SLOT);
+        confirm->action_labels[0] = kshim_menu_text(KSHIM_TEXT_ACTION_SWITCH_RESTART);
+        menu_append(confirm, KSHIM_MENU_ACTION_BACK, menu->ab_confirm_cancel, MENU_BACK, 0, KSHIM_MENU_ROLE_BOOT_SLOT);
+        confirm->initial = 1;
+        menu->page = MENU_PAGE_AB_CONFIRM;
+        return 2;
+    }
+    if (action == MENU_AB_COMMIT) {
+        int rc = storage_settings_native_ab_select(menu->ab_target, menu->ab.current);
+        if (rc && storage_settings_native_handoff_safe()) {
+            *failure = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            return 0;
+        }
+        /* A failed reset must not hand off an image loaded from the old slot. */
+        menu->ab_restart_required = 1;
+        (void)kshim_psci_request_system_reset();
+        menu->page = MENU_PAGE_MAIN;
+        *failure = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+        return 2;
+    }
+#endif
     if (action == MENU_DEVICE) {
         menu->page = MENU_PAGE_DEVICE;
         menu->pages[MENU_PAGE_DEVICE].initial = (size_t)menu->boot.device_choice;
@@ -1733,9 +1771,24 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         printf("%s\n", *failure);
     return 0;
 }
-static void serial_show_page(const struct menu_page *page)
+static const char *menu_page_title(const struct menu_selection *menu)
 {
-    printf("\n%s\n", KSHIM_STR_MENU_TITLE);
+    switch (menu->page) {
+    case MENU_PAGE_ADVANCED: return kshim_menu_text(KSHIM_TEXT_ADVANCED);
+    case MENU_PAGE_INFO: return kshim_menu_text(KSHIM_TEXT_INFO_LABEL);
+    case MENU_PAGE_SETTINGS: return kshim_menu_text(KSHIM_TEXT_SETTINGS_LABEL);
+    case MENU_PAGE_DEVICE: return kshim_menu_text(KSHIM_TEXT_DEVICE_LABEL);
+    case MENU_PAGE_AB: return kshim_menu_text(KSHIM_TEXT_AB);
+#if KSHIM_AB_MENU
+    case MENU_PAGE_AB_CONFIRM: return kshim_menu_text(menu->ab_target ? KSHIM_TEXT_AB_CONFIRM_B : KSHIM_TEXT_AB_CONFIRM_A);
+#endif
+    default: return KSHIM_STR_MENU_TITLE;
+    }
+}
+static void serial_show_page(const struct menu_selection *menu)
+{
+    const struct menu_page *page = &menu->pages[menu->page];
+    printf("\n%s\n", menu_page_title(menu));
     for (size_t i = 0; i < page->count; ++i) {
         printf("  %u. %s%s\n", (unsigned)i + 1U, page->names[i],
                i == page->initial ? KSHIM_STR_MENU_DEFAULT : "");
@@ -1753,12 +1806,19 @@ static void serial_cancel_timeout(struct menu_selection *menu)
     if (menu->timeout) printf("\n%s\n", KSHIM_STR_AUTO_CANCELLED);
     menu->timeout = 0;
 }
+static int menu_default_allowed(const struct menu_selection *menu)
+{
+#if KSHIM_AB_MENU
+    if(menu->ab_restart_required)return 0;
+#endif
+    return menu->default_ok;
+}
 static int serial_select(struct menu_selection *menu, size_t *selected)
 {
     int keys_ready = build_keys(menu->fdt) == 0;
     struct menu_page *page = &menu->pages[menu->page];
     size_t current = page->initial, numeric = 0;
-    serial_show_page(page);
+    serial_show_page(menu);
     uint64_t start = get_current_time();
     for (;;) {
         int confirm = 0;
@@ -1792,7 +1852,7 @@ static int serial_select(struct menu_selection *menu, size_t *selected)
                         : page->count - 1U;
                     confirm = 1;
                     serial_cancel_timeout(menu);
-                } else if (menu->default_ok) {
+                } else if (menu_default_allowed(menu)) {
                     /* Only a proven, board-safe default may be auto-selected;
                      * with none resolved, Escape never guesses a system. */
                     *selected = menu->original_initial;
@@ -1831,14 +1891,14 @@ static int serial_select(struct menu_selection *menu, size_t *selected)
             if (result == 2) {
                 page = &menu->pages[menu->page];
                 current = page->initial;
-                serial_show_page(page);
+                serial_show_page(menu);
             } else {
                 printf("%s", KSHIM_STR_MENU_PROMPT);
             }
             numeric = 0;
             continue;
         }
-        if (menu->timeout && menu->default_ok &&
+        if (menu->timeout && menu_default_allowed(menu) &&
             get_current_time() - start >= (uint64_t)menu->timeout) {
             *selected = menu->original_initial;
             return 0;
@@ -1883,6 +1943,7 @@ static int platform_select(uint64_t fdt, const char *const *names,
         gui_entered = 1;
 #endif
         kshim_lvgl_set_entry_roles(&Lvgl, page->roles, page->count);
+        kshim_lvgl_set_page_title(&Lvgl, menu_page_title(&menu));
         kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_ENTRIES);
         kshim_lvgl_set_countdown(&Lvgl, menu.timeout);
         uint64_t start = get_current_time();
@@ -1909,12 +1970,13 @@ static int platform_select(uint64_t fdt, const char *const *names,
                         break;
                     }
                     kshim_lvgl_set_entry_roles(&Lvgl, page->roles, page->count);
+                    kshim_lvgl_set_page_title(&Lvgl, menu_page_title(&menu));
                 } else {
                     kshim_lvgl_set_status(&Lvgl, failure);
                 }
                 continue;
             }
-            if (menu.timeout && menu.default_ok &&
+            if (menu.timeout && menu_default_allowed(&menu) &&
                 get_current_time() - start >= (uint64_t)menu.timeout) {
                 *selected = menu.original_initial;
                 break;

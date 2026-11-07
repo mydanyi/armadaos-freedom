@@ -153,6 +153,15 @@ static void KshimDesignRowDraw(lv_event_t *event) {
         }
     }
 }
+static const lv_font_t *KshimDesignLabelFont(const char *text, int32_t width) {
+    const lv_font_t *fonts[]={mRowFont,mStatusFont,mInfoFont};
+    for (unsigned i=0;i<sizeof(fonts)/sizeof(fonts[0]);++i) {
+        lv_point_t size;
+        lv_text_get_size(&size,text,fonts[i],0,0,INT32_MAX,LV_TEXT_FLAG_EXPAND);
+        if(size.x<=width) return fonts[i];
+    }
+    return mInfoFont;
+}
 static int KshimDesignEntry(lv_obj_t *button,size_t index) {
     if(!button || index>=mDesignGeometry.count) return -1;
     lv_obj_t *label=lv_obj_get_child(button,0);
@@ -207,6 +216,13 @@ static int KshimDesignEntry(lv_obj_t *button,size_t index) {
     }
     kshim_design_item_geometry_t metrics;
     kshim_design_item_layout(&mMenuDesign,&mDesignGeometry,(unsigned)index,lv_font_get_line_height(mRowFont),&metrics);
+    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART) {
+        const lv_font_t *font=KshimDesignLabelFont(mContext->Entries[index],metrics.label.w);
+        kshim_design_item_layout(&mMenuDesign,&mDesignGeometry,(unsigned)index,
+                                lv_font_get_line_height(font),&metrics);
+        lv_obj_set_style_text_font(label,font,0);
+        lv_label_set_text(label,mContext->Entries[index]);
+    }
     lv_obj_add_flag(label,LV_OBJ_FLAG_IGNORE_LAYOUT);
     lv_obj_remove_flag(label,LV_OBJ_FLAG_CLICKABLE);
     lv_label_set_long_mode(label,LV_LABEL_LONG_DOT);
@@ -230,16 +246,25 @@ static int KshimDesignRelayout(void) {
     if(!mContext || !mFramebuffer || !mPanel || !mTitle || !mStatus || !mList || !mBootButton) return -1;
     if(kshim_design_layout(&mMenuDesign,mContext->LogicalWidth,mContext->LogicalHeight,
         (uint32_t)mContext->EntryCount,KshimDesignScaleOverride(),&mDesignGeometry)!=0) return -2;
-    /* STAR_CHART device-info state: drop the illustration/notice and stretch the
-     * detail panel under the status title, leaving x/width and the boot button
-     * exactly as laid out. */
-    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART && !mDesignGeometry.compact && mInfoState) {
+    /* Device information, slot help, and settings use the full right panel. */
+    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART && !mDesignGeometry.compact &&
+       (mInfoState || mBootSlotState || mSettingsState)) {
         mDesignGeometry.illustration=(kshim_design_rect_t){0};
         mDesignGeometry.notice=(kshim_design_rect_t){0};
         mDesignGeometry.status.y=mDesignGeometry.list.y;
         mDesignGeometry.detail.y=mDesignGeometry.status.y+mDesignGeometry.status.h+KshimDesignPx(14);
-        mDesignGeometry.detail.h=kshim_design_max(0,
-            mDesignGeometry.boot.y-KshimDesignPx(12)-mDesignGeometry.detail.y);
+        int32_t bottom=mDesignGeometry.boot.y-KshimDesignPx(12);
+        if(mNotice && lv_label_get_text(mNotice)[0]) {
+            lv_point_t size;
+            lv_text_get_size(&size,lv_label_get_text(mNotice),mStatusFont,
+                lv_obj_get_style_text_letter_space(mNotice,0),
+                lv_obj_get_style_text_line_space(mNotice,0),
+                mDesignGeometry.detail.w,LV_TEXT_FLAG_NONE);
+            mDesignGeometry.notice=(kshim_design_rect_t){
+                mDesignGeometry.detail.x,bottom-size.y,mDesignGeometry.detail.w,size.y};
+            bottom=mDesignGeometry.notice.y-KshimDesignPx(12);
+        }
+        mDesignGeometry.detail.h=kshim_design_max(0,bottom-mDesignGeometry.detail.y);
     }
     KshimDesignPlace(mPanel,mDesignGeometry.panel);
     lv_obj_set_style_radius(mPanel,mDesignGeometry.compact?0:KshimDesignPx(mMenuDesign.panel_radius),0);
@@ -283,7 +308,7 @@ static int KshimDesignRelayout(void) {
         lv_obj_set_style_text_font(mStatus,mRowFont,0);
         lv_obj_set_style_text_color(mStatus,lv_color_hex(mMenuStyle.FocusBorder),0);
         if(mDetail) {
-            lv_obj_set_style_text_font(mDetail,mInfoState?mInfoFont:mStatusFont,0);
+            lv_obj_set_style_text_font(mDetail,(mInfoState || mBootSlotState || mSettingsState)?mInfoFont:mStatusFont,0);
             lv_obj_set_style_text_color(mDetail,lv_color_hex(mMenuStyle.Text),0);
         }
         if(mCredit) lv_obj_set_style_text_font(mCredit,mStatusFont,0);

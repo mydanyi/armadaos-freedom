@@ -60,24 +60,24 @@ struct role_case {
 };
 
 static const struct role_case role_cases[] = {
-    { KSHIM_MENU_ROLE_ANDROID,    "Android 原厂",   "Stock Android",     "原有",     "original Android" },
-    { KSHIM_MENU_ROLE_INTERNAL,   "机身 ArmadaOS",  "Internal ArmadaOS", "机身存储", "internal storage" },
-    { KSHIM_MENU_ROLE_TF,         "TF 卡 ArmadaOS", "TF card ArmadaOS",  "TF 卡",    "TF card" },
-    { KSHIM_MENU_ROLE_DIAGNOSTIC, "Linux 诊断模式", "Linux diagnostics", "诊断环境", "diagnostic environment" },
-    { KSHIM_MENU_ROLE_DEVICE_INFO, "设备信息",       "Device info",       "只读",     "read-only" },
+    { KSHIM_MENU_ROLE_ANDROID,    "启动 Android",   "Start Android",     "原有",     "original Android" },
+    { KSHIM_MENU_ROLE_INTERNAL,   "启动机身 ArmadaOS",  "Start internal ArmadaOS", "机身存储", "internal storage" },
+    { KSHIM_MENU_ROLE_TF,         "启动 TF 卡 ArmadaOS", "Start TF card ArmadaOS",  "TF 卡",    "TF card" },
+    { KSHIM_MENU_ROLE_DIAGNOSTIC, "Linux 诊断模式", "Linux diagnostics", "详细启动", "detailed Linux" },
+    { KSHIM_MENU_ROLE_DEVICE_INFO, "设备信息",       "Device info",       "硬件信息", "hardware information" },
     /* Appended session-settings roles: every one keeps its own localized
      * label/description and the earlier numeric values are unchanged. */
     { KSHIM_MENU_ROLE_SETTINGS,       "设置",              "Settings",
-      "本次启动", "this boot" },
-    { KSHIM_MENU_ROLE_DEVICE,         "设备",              "Device",
-      "机型",     "device used" },
+      "各项设置", "launcher settings" },
+    { KSHIM_MENU_ROLE_DEVICE,         "机型选择",          "Device model",
+      "机型",     "model used" },
     { KSHIM_MENU_ROLE_DEFAULT,        "默认启动项",         "Default boot entry",
-      "默认启动", "default system" },
+      "倒计时", "countdown" },
     { KSHIM_MENU_ROLE_DEVICE_AUTO,    "自动识别",           "Auto detect",
       "检测",     "detected" },
-    { KSHIM_MENU_ROLE_DEVICE_TB322FC, "Y700 四代 TB322FC", "Y700 Gen4 TB322FC",
+    { KSHIM_MENU_ROLE_DEVICE_TB322FC, "Y700 四代（TB322FC）", "Y700 Gen4 (TB322FC)",
       "TB322FC", "TB322FC" },
-    { KSHIM_MENU_ROLE_DEVICE_TB323FU, "Y700 五代 TB323FU", "Y700 Gen5 TB323FU",
+    { KSHIM_MENU_ROLE_DEVICE_TB323FU, "Y700 五代（TB323FU）", "Y700 Gen5 (TB323FU)",
       "TB323FU", "TB323FU" },
 };
 
@@ -126,6 +126,8 @@ static void check_role_fallbacks(void)
     assert(kshim_menu_role_description((kshim_menu_role_t)-1, fallback_desc) == fallback_desc);
     /* KSHIM_MENU_ROLE_MAX is now the last valid role, so MAX + 1 is the first
      * out-of-range value the fallback contract must reject. */
+    assert(kshim_menu_role_name(KSHIM_MENU_ROLE_BOOT_SLOT, fallback_name) == fallback_name);
+    assert(kshim_menu_role_description(KSHIM_MENU_ROLE_BOOT_SLOT, fallback_desc) == fallback_desc);
     assert(kshim_menu_role_name((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_name) == fallback_name);
     assert(kshim_menu_role_description((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_desc) == fallback_desc);
 }
@@ -156,7 +158,8 @@ static void check_role_values(void)
     assert(KSHIM_MENU_ROLE_DEVICE_AUTO == 20);
     assert(KSHIM_MENU_ROLE_DEVICE_TB322FC == 21);
     assert(KSHIM_MENU_ROLE_DEVICE_TB323FU == 22);
-    assert(KSHIM_MENU_ROLE_MAX == KSHIM_MENU_ROLE_DEVICE_TB323FU);
+    assert(KSHIM_MENU_ROLE_BOOT_SLOT == 23);
+    assert(KSHIM_MENU_ROLE_MAX == KSHIM_MENU_ROLE_BOOT_SLOT);
 }
 
 /* The changed/added session-settings strings are non-empty in both languages
@@ -165,12 +168,12 @@ static void check_role_values(void)
 static void check_settings_texts(int chinese, const char **out)
 {
     static const char *const zh[] = {
-        "默认启动项", "自动识别", "Y700 四代 TB322FC", "Y700 五代 TB323FU",
-        "镜像默认", "设备：%s", "默认启动项：%s", "返回上一级。",
+        "默认启动项", "自动识别", "Y700 四代（TB322FC）", "Y700 五代（TB323FU）",
+        "镜像默认", "机型选择：%s", "默认启动项：%s", "返回上一级。",
     };
     static const char *const en[] = {
-        "Default boot entry", "Auto detect", "Y700 Gen4 TB322FC", "Y700 Gen5 TB323FU",
-        "Image default", "Device: %s", "Default boot entry: %s",
+        "Default boot entry", "Auto detect", "Y700 Gen4 (TB322FC)", "Y700 Gen5 (TB323FU)",
+        "Image default", "Device model: %s", "Default boot entry: %s",
         "Return to the previous menu.",
     };
     const kshim_menu_text_id ids[8] = {

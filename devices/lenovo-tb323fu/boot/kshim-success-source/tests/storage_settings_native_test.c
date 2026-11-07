@@ -32,7 +32,7 @@ int kshim_ufs_settings_open(struct kshim_ufs_settings *b,const struct kshim_ufs_
     void *arena,uint32_t board,int (*preflight)(void *,uint64_t *),void *ctx,
     const struct kshim_config_values *defaults){
     ++opens;last=b;assert(ctx==b&&arena&&ops->manage_link&&defaults);
-    b->board=board;uint64_t dma;int rc=preflight(ctx,&dma);
+    b->board=board;b->preflight=preflight;uint64_t dma;int rc=preflight(ctx,&dma);
     b->load_status=rc?rc:load_result;return b->load_status;
 }
 int kshim_settings_save(struct kshim_settings_session *s,const struct kshim_config_values *v){
@@ -47,6 +47,14 @@ int storage_settings_export(void *fdt,const struct kshim_ufs_settings *b,uint32_
 static int mmu_on=1,enable_rc,close_rc,note_rc,note_unsafe;
 static unsigned enables,closes,notes;
 static uint64_t root_table=0x4000;
+static unsigned ab_calls;
+static int ab_rc,ab_unsafe;
+int kshim_ufs_settings_ab(struct kshim_ufs_settings *b,struct kshim_ab_status *status,
+                         bool change,unsigned target,unsigned current){
+    assert(b==last&&status&&mmu_on);
+    assert(!change || (target==1&&current==0));
+    ++ab_calls;if(ab_unsafe)b->unsafe=1;return ab_rc;
+}
 int kshim_mmu_is_enabled(void){return mmu_on;}
 uint64_t kshim_mmu_root_table(void){return root_table;}
 int kshim_mmu_enable_current_cpu(void){++enables;if(!enable_rc)mmu_on=1;return enable_rc;}
@@ -85,6 +93,30 @@ static void late_history(void){
     assert(storage_settings_native_note_boot(2)!=0&&notes==6&&closes==4);
     assert(!storage_settings_native_handoff_safe());
 }
+static void serial_ab(void){
+    struct kshim_ab_status status;
+    last->unsafe=0;close_rc=0;enables=closes=0;mmu_on=0;
+    assert(storage_settings_native_ab_status(&status)==0);
+    assert(ab_calls==1&&enables==1&&closes==1&&!mmu_on);
+    assert(storage_settings_native_ab_select(1,0)==0);
+    assert(ab_calls==2&&enables==2&&closes==2&&!mmu_on);
+    mmu_on=1;
+    assert(storage_settings_native_ab_status(&status)==0);
+    assert(ab_calls==3&&enables==2&&closes==2&&mmu_on);
+    mmu_on=0;root_table=0;
+    assert(storage_settings_native_ab_select(1,0)==KSHIM_UFS_UNSUPPORTED&&ab_calls==3);
+    root_table=0x4000;enable_rc=-1;
+    assert(storage_settings_native_ab_status(&status)==KSHIM_UFS_UNSUPPORTED&&ab_calls==3&&!mmu_on);
+    enable_rc=0;ab_rc=-77;
+    assert(storage_settings_native_ab_select(1,0)==-77&&ab_calls==4&&closes==3&&!mmu_on);
+    ab_rc=0;ab_unsafe=1;
+    assert(storage_settings_native_ab_select(1,0)==KSHIM_UFS_QUARANTINED&&ab_calls==5&&closes==3&&mmu_on);
+    assert(!storage_settings_native_handoff_safe());
+    assert(storage_settings_native_ab_status(&status)!=0&&ab_calls==5);
+    last->unsafe=0;ab_unsafe=0;mmu_on=0;close_rc=-1;
+    assert(storage_settings_native_ab_status(&status)==KSHIM_UFS_QUARANTINED&&ab_calls==6&&closes==4);
+    assert(!storage_settings_native_handoff_safe());
+}
 int main(void){
     const struct kshim_config_values defaults={0,0,1, 0, 0};
     assert(storage_settings_native_open(DEVICE_BOARD_UNKNOWN,&defaults)==KSHIM_UFS_UNSUPPORTED);
@@ -106,6 +138,7 @@ int main(void){
     assert(storage_settings_native_session()==&last->settings);
     assert(storage_settings_native_export(&opens)==123);
     late_history();
+    serial_ab();
     unsigned old=opens;last->unsafe=1;
     assert(!storage_settings_native_handoff_safe());
     assert(storage_settings_native_open(DEVICE_BOARD_TB322FC,&defaults)==KSHIM_UFS_QUARANTINED&&opens==old);

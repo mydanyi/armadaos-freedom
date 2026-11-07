@@ -115,6 +115,7 @@ static void AssertDescription(const kshim_lvgl_t *Ui, const char *Name,
                               const char *Description, const char *ActionLabel)
 {
     /* The selected name appears both in navigation and in the right heading. */
+    if(CountLabels(lv_screen_active(), Name)<2U) fprintf(stderr,"Missing selected name: %s (count %u)\n",Name,CountLabels(lv_screen_active(),Name));
     assert(CountLabels(lv_screen_active(), Name) >= 2U);
     assert(CountLabels(lv_screen_active(), Description) == 1U);
     assert(CountLabels(Ui->BootButton, ActionLabel) == 1U);
@@ -204,7 +205,7 @@ static void RenderStarMain(const char *Directory, kshim_lvgl_t *Ui,
 {
     static const kshim_menu_role_t Roles[8] = {
         KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL, KSHIM_MENU_ROLE_TF,
-        KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_LANGUAGE,
+        KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_SETTINGS,
         KSHIM_MENU_ROLE_DEVICE_INFO,
         KSHIM_MENU_ROLE_RESTART, KSHIM_MENU_ROLE_OFF,
     };
@@ -240,22 +241,25 @@ static void RenderStarAdvanced(const char *Directory, kshim_lvgl_t *Ui,
                                uint32_t LogicalWidth, uint32_t LogicalHeight,
                                const char *Tag)
 {
-    static const kshim_menu_role_t Roles[5] = {
+    static const kshim_menu_role_t Roles[6] = {
         KSHIM_MENU_ROLE_DIAGNOSTIC, KSHIM_MENU_ROLE_RECOVERY,
-        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_BACK,
+        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_BOOT_SLOT, KSHIM_MENU_ROLE_BACK,
     };
-    const char *Names[5];
-    const char *Descriptions[5];
-    const char *Actions[5];
-    StarFillRoles(Roles, 5U, Names, Descriptions);
+    const char *Names[6];
+    const char *Descriptions[6];
+    const char *Actions[6];
+    StarFillRoles(Roles, 6U, Names, Descriptions);
     Actions[0] = KSHIM_MENU_ACTION_BOOT;
     Actions[1] = KSHIM_MENU_ACTION_ENTER;
     Actions[2] = KSHIM_MENU_ACTION_ENTER;
     Actions[3] = KSHIM_MENU_ACTION_ENTER;
-    Actions[4] = KSHIM_MENU_ACTION_BACK;
+    Names[4] = kshim_menu_text(KSHIM_TEXT_AB);
+    Descriptions[4] = kshim_menu_text(KSHIM_TEXT_AB_DESC);
+    Actions[4] = KSHIM_MENU_ACTION_ENTER;
+    Actions[5] = KSHIM_MENU_ACTION_BACK;
     assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
-        (const char *const *)Descriptions, (const char *const *)Actions, 5U, 0U) == 0);
-    kshim_lvgl_set_entry_roles(Ui, Roles, 5U);
+        (const char *const *)Descriptions, (const char *const *)Actions, 6U, 0U) == 0);
+    kshim_lvgl_set_entry_roles(Ui, Roles, 6U);
     kshim_lvgl_set_countdown(Ui, 0U);
     kshim_lvgl_set_status(Ui, "");
     Advance(Ui, 400U);
@@ -295,114 +299,220 @@ static void RenderStarLanguagePage(const char *Directory, kshim_lvgl_t *Ui,
     (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
 }
 
-/* The STAR Device info page keeps the whole home list and renders one localized
- * multi-line summary on the selected Device info row.  A shorter model and the
- * overlong truncated variants are both captured; the values are synthetic and
- * claim no captured stock FDT. */
 static void RenderStarDeviceInfo(const char *Directory, kshim_lvgl_t *Ui,
                                  const kshim_framebuffer_t *Framebuffer,
-                                 uint32_t LogicalWidth, uint32_t LogicalHeight,
-                                 const char *Tag)
+                                 uint32_t Width, uint32_t Height, const char *Tag)
 {
-    static const kshim_menu_role_t Roles[8] = {
-        KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL, KSHIM_MENU_ROLE_TF,
-        KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_LANGUAGE,
-        KSHIM_MENU_ROLE_DEVICE_INFO, KSHIM_MENU_ROLE_RESTART, KSHIM_MENU_ROLE_OFF,
-    };
-    static const kshim_menu_text_id FieldLabels[7] = {
-        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
-        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
-        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
-    };
-    enum { InfoRow = 5 };
-    const char *Names[8];
-    const char *Descriptions[8];
-    const char *Actions[8];
-    StarFillRoles(Roles, 8U, Names, Descriptions);
-    Actions[0] = KSHIM_MENU_ACTION_BOOT;
-    Actions[1] = KSHIM_MENU_ACTION_BOOT;
-    Actions[2] = KSHIM_MENU_ACTION_BOOT;
-    Actions[3] = KSHIM_MENU_ACTION_ENTER;
-    Actions[4] = KSHIM_MENU_ACTION_ENTER;
-    Actions[5] = KSHIM_MENU_ACTION_BACK;
-    Actions[6] = KSHIM_MENU_ACTION_RESTART;
-    Actions[7] = KSHIM_MENU_ACTION_OFF;
-
-    /* The ordinary fixture ends the compatible list on the shared ellipsis. */
-    const char *NormalValues[7] = {
-        "TB322FC", "SM8750", "Lenovo TB322FC (fixture)",
-        "lenovo,elden\nqcom,sm8750\nqcom,sun\xe2\x80\xa6",
-        "8192 MiB", "1904x3040 stride 7616", "0.0.1",
-    };
-    char Normal[1024];
-    size_t Off = 0;
-    for (size_t Index = 0; Index < 7U; Index++) {
-        int Length = snprintf(Normal + Off, sizeof(Normal) - Off, "%s: %s%s",
-                              kshim_menu_text(FieldLabels[Index]),
-                              NormalValues[Index], (Index + 1U < 7U) ? "\n" : "");
-        assert(Length > 0 && (size_t)Length < sizeof(Normal) - Off);
-        Off += (size_t)Length;
-    }
-
-    /* An overlong model and three overlong compatible lines, each truncated
-     * with the shared ellipsis and never shortened to fit. */
-    char Model[160];
-    memset(Model, 'M', 120);
-    memcpy(Model + 120, "\xe2\x80\xa6", 4);
-    char Compat[200];
-    size_t CompatLength = 0;
-    for (int Line = 0; Line < 3; Line++) {
-        memset(Compat + CompatLength, 'W', 44);
-        CompatLength += 44;
-        memcpy(Compat + CompatLength, "\xe2\x80\xa6", 3);
-        CompatLength += 3;
-        if (Line < 2) Compat[CompatLength++] = '\n';
-    }
-    Compat[CompatLength] = '\0';
-    const char *ExtremeValues[7] = {
-        "TB322FC", "SM8750", Model, Compat,
-        "8192 MiB", "1904x3040 stride 7616", "0.0.1",
-    };
-    char Extreme[1024];
-    Off = 0;
-    for (size_t Index = 0; Index < 7U; Index++) {
-        int Length = snprintf(Extreme + Off, sizeof(Extreme) - Off, "%s: %s%s",
-                              kshim_menu_text(FieldLabels[Index]),
-                              ExtremeValues[Index], (Index + 1U < 7U) ? "\n" : "");
-        assert(Length > 0 && (size_t)Length < sizeof(Extreme) - Off);
-        Off += (size_t)Length;
-    }
-
-    Descriptions[InfoRow] = Normal;
-    assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
-        (const char *const *)Descriptions, (const char *const *)Actions, 8U,
-        (size_t)InfoRow) == 0);
-    kshim_lvgl_set_entry_roles(Ui, Roles, 8U);
-    kshim_lvgl_set_countdown(Ui, 0U);
-    kshim_lvgl_set_status(Ui, "");
-    Advance(Ui, 400U);
-    AssertDescription(Ui, Names[InfoRow], Normal, Actions[InfoRow]);
-    char Stage[64];
-    int Length = snprintf(Stage, sizeof(Stage), "star-%s-device-info", Tag);
-    assert(Length > 0 && (size_t)Length < sizeof(Stage));
-    (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
-
-    /* The truncated model/compatible variant fills the summary; the image is
-     * reviewed by eye and the initial title is still the Device info row. */
-    Descriptions[InfoRow] = Extreme;
-    assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
-        (const char *const *)Descriptions, (const char *const *)Actions, 8U,
-        (size_t)InfoRow) == 0);
-    kshim_lvgl_set_entry_roles(Ui, Roles, 8U);
-    kshim_lvgl_set_countdown(Ui, 0U);
-    kshim_lvgl_set_status(Ui, "");
-    Advance(Ui, 400U);
-    AssertDescription(Ui, Names[InfoRow], Extreme, Actions[InfoRow]);
-    Length = snprintf(Stage, sizeof(Stage), "star-%s-device-compatible", Tag);
-    assert(Length > 0 && (size_t)Length < sizeof(Stage));
-    (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
+    const kshim_menu_role_t roles[6]={KSHIM_MENU_ROLE_ANDROID,KSHIM_MENU_ROLE_INTERNAL,
+        KSHIM_MENU_ROLE_TF,KSHIM_MENU_ROLE_ADVANCED,KSHIM_MENU_ROLE_SETTINGS,KSHIM_MENU_ROLE_DEVICE_INFO};
+    const char *names[6],*descriptions[6],*actions[6];
+    StarFillRoles(roles,6,names,descriptions);
+    for(unsigned i=0;i<6;++i)actions[i]=KSHIM_MENU_ACTION_ENTER;
+    actions[5]=kshim_menu_text(KSHIM_TEXT_BACK);
+    char summary[1024];
+    snprintf(summary,sizeof(summary),"%s: TB323FU\n%s: SM8850\n%s: 12288 MiB\n%s: %s\n%s: preview",
+        kshim_menu_text(KSHIM_TEXT_INFO_BOARD),kshim_menu_text(KSHIM_TEXT_INFO_SOC),
+        kshim_menu_text(KSHIM_TEXT_INFO_RAM),kshim_menu_text(KSHIM_TEXT_INFO_SLOT),
+        kshim_menu_text(KSHIM_TEXT_SLOT_B),kshim_menu_text(KSHIM_TEXT_INFO_VERSION));
+    descriptions[5]=summary;
+    assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,6,5)==0);
+    kshim_lvgl_set_entry_roles(Ui,roles,6);
+    kshim_lvgl_set_page_title(Ui,kshim_menu_text(KSHIM_TEXT_INFO_LABEL));
+    kshim_lvgl_set_countdown(Ui,0);kshim_lvgl_set_status(Ui,"");Advance(Ui,400);
+    AssertDescription(Ui,names[5],summary,actions[5]);
+    char stage[80];snprintf(stage,sizeof(stage),"star-%s-device-info",Tag);
+    (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
 }
 
+static void AssertBootSlotHelpFits(lv_obj_t *Object, const char *Text,
+                                  const kshim_lvgl_t *Ui)
+{
+    if (lv_obj_check_type(Object, &lv_label_class) &&
+        strcmp(lv_label_get_text(Object), Text) == 0) {
+        lv_point_t Size;
+        lv_text_get_size(&Size, Text, lv_obj_get_style_text_font(Object, 0),
+            lv_obj_get_style_text_letter_space(Object, 0),
+            lv_obj_get_style_text_line_space(Object, 0),
+            lv_obj_get_content_width(Object), LV_TEXT_FLAG_NONE);
+        printf("BOOT SLOT HELP: text=%ldx%ld area=%ldx%ld\n",
+            (long)Size.x, (long)Size.y, (long)lv_obj_get_content_width(Object),
+            (long)lv_obj_get_content_height(Object));
+        assert(Size.x <= lv_obj_get_content_width(Object));
+        assert(Size.y <= lv_obj_get_content_height(Object));
+        lv_area_t Body, Button;
+        lv_obj_get_coords(Object, &Body);
+        lv_obj_get_coords(Ui->BootButton, &Button);
+        assert(Body.y2 < Button.y1);
+    }
+    for (uint32_t Index = 0; Index < lv_obj_get_child_count(Object); Index++)
+        AssertBootSlotHelpFits(lv_obj_get_child(Object, (int32_t)Index), Text, Ui);
+}
+
+static lv_obj_t *FindLabel(lv_obj_t *object, const char *text)
+{
+    if (lv_obj_check_type(object, &lv_label_class) &&
+        strcmp(lv_label_get_text(object), text) == 0) return object;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(object); ++i) {
+        lv_obj_t *found = FindLabel(lv_obj_get_child(object, (int32_t)i), text);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+static void AssertNoticeVisible(const kshim_lvgl_t *ui, const char *message,
+                                const char *description)
+{
+    lv_obj_t *notice = FindLabel(lv_screen_active(), message);
+    lv_obj_t *detail = FindLabel(lv_screen_active(), description);
+    assert(notice != NULL && detail != NULL);
+    assert(lv_obj_is_visible(notice));
+    AssertBootSlotHelpFits(lv_screen_active(), message, ui);
+    AssertBootSlotHelpFits(lv_screen_active(), description, ui);
+    lv_area_t n, d, screen;
+    lv_obj_get_coords(notice, &n);
+    lv_obj_get_coords(detail, &d);
+    lv_obj_get_coords(lv_screen_active(), &screen);
+    assert(d.y2 < n.y1);
+    assert(n.x1 >= screen.x1 && n.x2 <= screen.x2 &&
+           n.y1 >= screen.y1 && n.y2 <= screen.y2);
+}
+
+static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
+                         const kshim_framebuffer_t *Framebuffer,
+                         uint32_t Width,uint32_t Height,const char *Tag)
+{
+    for(unsigned current=0;current<2;++current)for(unsigned page=0;page<5;++page){
+        unsigned target=1-current;
+        char stage[80],state[96],next[96],body[1152],detail[1536],back[1536];
+        snprintf(state,sizeof(state),kshim_menu_text(KSHIM_TEXT_SLOT_STATE_FMT),kshim_menu_text(current?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A));
+        snprintf(next,sizeof(next),kshim_menu_text(KSHIM_TEXT_SLOT_TARGET_FMT),kshim_menu_text(target?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A));
+        const char *names[3],*descriptions[3],*actions[3];
+        kshim_menu_role_t roles[3]={KSHIM_MENU_ROLE_BOOT_SLOT,KSHIM_MENU_ROLE_BOOT_SLOT,KSHIM_MENU_ROLE_BOOT_SLOT};
+        size_t count=2,initial=0;
+        const char *title=kshim_menu_text(KSHIM_TEXT_AB);
+        if(page==0){
+            title=kshim_menu_text(KSHIM_TEXT_ADVANCED);
+            names[0]=kshim_menu_text(KSHIM_TEXT_AB);names[1]=kshim_menu_text(KSHIM_TEXT_BACK);
+            snprintf(detail,sizeof(detail),"%s\n\n%s",state,kshim_menu_text(KSHIM_TEXT_AB_DESC));
+            descriptions[0]=detail;descriptions[1]=KSHIM_MENU_DESC_BACK;
+            actions[0]=KSHIM_MENU_ACTION_ENTER;actions[1]=KSHIM_MENU_ACTION_BACK;
+        }else if(page==1||page==4){
+            count=3;initial=target;
+            names[current]=kshim_menu_text(current?KSHIM_TEXT_AB_CURRENT_B:KSHIM_TEXT_AB_CURRENT_A);
+            names[target]=kshim_menu_text(page==4?(target?KSHIM_TEXT_AB_UNAVAILABLE_B:KSHIM_TEXT_AB_UNAVAILABLE_A):(target?KSHIM_TEXT_AB_B:KSHIM_TEXT_AB_A));
+            names[2]=kshim_menu_text(KSHIM_TEXT_AB_BACK);
+            if(page==4)snprintf(body,sizeof(body),"%s",kshim_menu_text(KSHIM_TEXT_AB_UNAVAILABLE));
+            else snprintf(body,sizeof(body),kshim_menu_text(KSHIM_TEXT_AB_TARGET_DESC),
+                kshim_menu_text(current?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A),kshim_menu_text(target?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A),
+                          kshim_menu_text(target?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A));
+            snprintf(detail,sizeof(detail),"%s\n\n%s",state,body);
+            descriptions[target]=detail;descriptions[current]=state;descriptions[2]=kshim_menu_text(KSHIM_TEXT_AB_BACK_DESC);
+            actions[current]=kshim_menu_text(KSHIM_TEXT_ACTION_UNAVAILABLE);actions[target]=page==4?actions[current]:KSHIM_MENU_ACTION_ENTER;actions[2]=KSHIM_MENU_ACTION_BACK;
+        }else{
+            title=kshim_menu_text(target?KSHIM_TEXT_AB_CONFIRM_B:KSHIM_TEXT_AB_CONFIRM_A);
+            initial=page==2?1:0;
+            names[0]=kshim_menu_text(KSHIM_TEXT_ACTION_SWITCH_RESTART);names[1]=KSHIM_MENU_ACTION_BACK;
+            snprintf(body,sizeof(body),kshim_menu_text(KSHIM_TEXT_AB_CONFIRM),kshim_menu_text(target?KSHIM_TEXT_SLOT_B:KSHIM_TEXT_SLOT_A));
+            snprintf(detail,sizeof(detail),"%s\n%s\n\n%s",state,next,body);
+            snprintf(back,sizeof(back),"%s\n%s\n\n%s",state,next,kshim_menu_text(KSHIM_TEXT_AB_CONFIRM_BACK_DESC));
+            descriptions[0]=detail;descriptions[1]=back;
+            actions[0]=names[0];actions[1]=KSHIM_MENU_ACTION_BACK;
+        }
+        assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,count,initial)==0);
+        kshim_lvgl_set_entry_roles(Ui,roles,count);
+        kshim_lvgl_set_page_title(Ui,title);
+        kshim_lvgl_set_countdown(Ui,0);kshim_lvgl_set_status(Ui,"");Advance(Ui,400);
+        AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        assert(CountLabels(lv_screen_active(),title)>=1);
+        AssertBootSlotHelpFits(lv_screen_active(),descriptions[initial],Ui);
+        snprintf(stage,sizeof(stage),"star-%s-ab-%u-%u",Tag,current,page);
+        (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+        if (page == 0 || page == 3) {
+            const char *failed = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            const char *restart = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+            lv_obj_t *description = FindLabel(lv_screen_active(), descriptions[initial]);
+            assert(description != NULL);
+            int32_t full_height = lv_obj_get_height(description);
+            kshim_lvgl_set_status(Ui, failed);
+            Advance(Ui, 80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            AssertNoticeVisible(Ui, failed, descriptions[initial]);
+            snprintf(stage,sizeof(stage),"star-%s-ab-%u-%u-error",Tag,current,page);
+            (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+            kshim_lvgl_set_status(Ui, restart);
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            AssertNoticeVisible(Ui, restart, descriptions[initial]);
+            lv_obj_t *notice = FindLabel(lv_screen_active(), restart);
+            kshim_lvgl_set_status(Ui, "");
+            Advance(Ui, 80);
+            assert(!lv_obj_is_visible(notice));
+            assert(lv_obj_get_height(description) == full_height);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            kshim_lvgl_set_status(Ui, failed);
+            lv_group_focus_obj(lv_group_get_obj_by_index(Ui->Group, 1));
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            assert(!lv_obj_is_visible(notice));
+            /* A page rebuild also clears the old transaction error. */
+            kshim_lvgl_set_status(Ui, failed);
+            assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,count,initial)==0);
+            kshim_lvgl_set_entry_roles(Ui,roles,count);
+            kshim_lvgl_set_page_title(Ui,title);
+            Advance(Ui, 80);
+            assert(CountLabels(lv_screen_active(), failed) == 0);
+            assert(!lv_obj_is_visible(notice));
+            assert(lv_obj_get_height(description) == full_height);
+        }
+    }
+}
+static void RenderStarSettings(const char *Directory,kshim_lvgl_t *Ui,
+                               const kshim_framebuffer_t *Framebuffer,
+                               uint32_t Width,uint32_t Height,const char *Tag)
+{
+    for(unsigned page=0;page<2;++page){
+        char device[192],system[192],language[192],automatic[192],stage[80];
+        snprintf(device,sizeof(device),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT),kshim_menu_text(KSHIM_TEXT_BOARD_TB323FU_NAME));
+        snprintf(system,sizeof(system),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEFAULT_FMT),kshim_menu_get_language()==KSHIM_MENU_LANG_ZH_CN?"机身 ArmadaOS":"Internal ArmadaOS");
+        snprintf(language,sizeof(language),kshim_menu_text(KSHIM_TEXT_SETTINGS_LANGUAGE_FMT),kshim_menu_text(KSHIM_TEXT_LANGUAGE_STATE));
+        snprintf(automatic,sizeof(automatic),kshim_menu_text(KSHIM_TEXT_DEVICE_AUTO_FMT),kshim_menu_text(KSHIM_TEXT_BOARD_TB323FU_NAME));
+        const char *names[4]={device,system,language,kshim_menu_text(KSHIM_TEXT_BACK)};
+        const char *descriptions[4]={kshim_menu_text(KSHIM_TEXT_DEVICE_DESC),kshim_menu_text(KSHIM_TEXT_DEFAULT_DESC),kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC),KSHIM_MENU_DESC_BACK};
+        const char *actions[4]={KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_BACK};
+        kshim_menu_role_t roles[4]={KSHIM_MENU_ROLE_DEVICE,KSHIM_MENU_ROLE_DEFAULT,KSHIM_MENU_ROLE_LANGUAGE,KSHIM_MENU_ROLE_BACK};
+        const char *title=kshim_menu_text(page?KSHIM_TEXT_DEVICE_LABEL:KSHIM_TEXT_SETTINGS_LABEL);
+        if(page){
+            names[0]=automatic;names[1]=kshim_menu_text(KSHIM_TEXT_DEVICE_TB322FC_NAME);names[2]=kshim_menu_text(KSHIM_TEXT_DEVICE_TB323FU_NAME);names[3]=kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS);
+            descriptions[0]=kshim_menu_text(KSHIM_TEXT_DEVICE_AUTO_DESC);descriptions[1]=kshim_menu_text(KSHIM_TEXT_DEVICE_TB322FC_DESC);descriptions[2]=kshim_menu_text(KSHIM_TEXT_DEVICE_TB323FU_DESC);descriptions[3]=kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS_DESC);
+            roles[0]=KSHIM_MENU_ROLE_DEVICE_AUTO;roles[1]=KSHIM_MENU_ROLE_DEVICE_TB322FC;roles[2]=KSHIM_MENU_ROLE_DEVICE_TB323FU;
+            actions[0]=actions[1]=actions[2]=kshim_menu_text(KSHIM_TEXT_LANGUAGE_SELECT);
+        }
+        char saved[576];
+        if(!page){
+            snprintf(saved,sizeof(saved),"%s\n\n%s",descriptions[0],kshim_menu_text(KSHIM_TEXT_SETTINGS_INTERNAL));
+            descriptions[0]=saved;
+        }
+        size_t initial=page?2:0;
+        assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,4,initial)==0);
+        kshim_lvgl_set_entry_roles(Ui,roles,4);kshim_lvgl_set_page_title(Ui,title);
+        kshim_lvgl_set_countdown(Ui,0);
+        Advance(Ui,400);
+        AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        AssertBootSlotHelpFits(lv_screen_active(),descriptions[initial],Ui);
+        snprintf(stage,sizeof(stage),"star-%s-%s",Tag,page?"device-select":"settings");
+        (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+        if (!page) {
+            const char *failed=kshim_menu_text(KSHIM_TEXT_SETTINGS_SAVE_FAILED);
+            kshim_lvgl_set_status(Ui,failed);
+            Advance(Ui,80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+            AssertNoticeVisible(Ui,failed,descriptions[initial]);
+            kshim_lvgl_set_status(Ui,"");
+            Advance(Ui,80);
+            AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        }
+    }
+}
 static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
                                   const kshim_framebuffer_t *Framebuffer,
                                   uint32_t LogicalWidth, uint32_t LogicalHeight,
@@ -414,6 +524,8 @@ static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
     RenderStarLanguagePage(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight,
                            Language, Tag);
     RenderStarDeviceInfo(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
+    RenderStarAb(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
+    RenderStarSettings(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
 }
 
 static void RenderStarSize(const char *Directory, uint32_t PhysicalWidth,

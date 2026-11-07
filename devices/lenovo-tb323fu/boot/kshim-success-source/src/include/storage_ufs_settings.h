@@ -2,6 +2,7 @@
 #pragma once
 #include <storage_ufs.h>
 #include <storage_settings.h>
+#include <storage_ab.h>
 /* Zero-initialize once. All members, arena and preflight context must remain
  * alive through the menu. Never clear an unsafe or owned backend. */
 struct kshim_ufs_settings {
@@ -25,3 +26,5 @@ int kshim_ufs_settings_open(struct kshim_ufs_settings *,
     int (*preflight)(void *, uint64_t *), void *preflight_context,
     const struct kshim_config_values *defaults);
 bool kshim_ufs_settings_handoff_safe(const struct kshim_ufs_settings *);
+int kshim_ufs_settings_ab(struct kshim_ufs_settings *, struct kshim_ab_status *,
+                           bool change, unsigned target, unsigned expected_current);

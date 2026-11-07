@@ -233,10 +233,10 @@ static void KshimAnimate(
   lv_anim_start(&Animation);
 }
 
-/* True while the focused row is the read-only Device info summary. It is
- * identified only by the existing DEVICE_INFO role plus the current localized
- * Back action, so no new role or API is introduced. */
+/* Expanded details are selected by the focused row's role. */
 static bool mInfoState;
+static bool mBootSlotState;
+static bool mSettingsState;
 
 #include "menu_design_port.h"
 
@@ -256,17 +256,34 @@ static int KshimButtonIndex(const lv_obj_t *Button)
 static void KshimShowEntry(size_t Index)
 {
   if (mContext == NULL || Index >= mContext->EntryCount) return;
-  /* Entering or leaving the read-only summary changes the STAR chart geometry;
-   * an ordinary row restores the baseline layout. */
+  /* An ordinary row restores the baseline STAR chart layout. */
   const char *EntryAction = mContext->ActionLabels[Index];
   bool Info = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
       mContext->Roles[Index] == KSHIM_MENU_ROLE_DEVICE_INFO &&
-      EntryAction != NULL && strcmp(EntryAction, KSHIM_MENU_ACTION_BACK) == 0;
-  if (Info != mInfoState) {
+      EntryAction != NULL && strcmp(EntryAction, kshim_menu_text(KSHIM_TEXT_BACK)) == 0;
+  bool BootSlot = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      mContext->Roles[Index] == KSHIM_MENU_ROLE_BOOT_SLOT;
+  kshim_menu_role_t Role = mContext->Roles[Index];
+  bool Settings = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      (Role == KSHIM_MENU_ROLE_DEVICE || Role == KSHIM_MENU_ROLE_DEFAULT ||
+       Role == KSHIM_MENU_ROLE_DEVICE_AUTO || Role == KSHIM_MENU_ROLE_DEVICE_TB322FC ||
+       Role == KSHIM_MENU_ROLE_DEVICE_TB323FU || Role == KSHIM_MENU_ROLE_LANGUAGE);
+  bool ClearNotice = mNotice != NULL && lv_label_get_text(mNotice)[0] &&
+      (Info || BootSlot || Settings || mInfoState || mBootSlotState || mSettingsState);
+  if (ClearNotice) lv_label_set_text(mNotice, "");
+  if (Info != mInfoState || BootSlot != mBootSlotState ||
+      Settings != mSettingsState || ClearNotice) {
     mInfoState = Info;
+    mBootSlotState = BootSlot;
+    mSettingsState = Settings;
     (void)KshimDesignRelayout();
   }
-  if (mStatus != NULL) lv_label_set_text(mStatus, mContext->Entries[Index]);
+  if (mStatus != NULL) {
+    if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART)
+      lv_obj_set_style_text_font(mStatus,
+          KshimDesignLabelFont(mContext->Entries[Index],mDesignGeometry.status.w),0);
+    lv_label_set_text(mStatus, mContext->Entries[Index]);
+  }
   if (mDetail != NULL) {
     const char *Description = mContext->Descriptions[Index];
     if (Description == NULL || Description[0] == '\0')
@@ -372,6 +389,7 @@ static int KshimRebuildEntries(size_t Initial)
   if (mContext == NULL || mList == NULL || mContext->Group == NULL ||
       mContext->EntryCount == 0U || Initial >= mContext->EntryCount)
     return -1;
+  if (mNotice != NULL) lv_label_set_text(mNotice, "");
   if (KshimRelayoutChrome() != 0)
     return -2;
   lv_group_t *Group = (lv_group_t *)mContext->Group;
@@ -390,7 +408,6 @@ static int KshimRebuildEntries(size_t Initial)
   if (KSHIM_MENU_IS_NATIVE) lv_obj_add_state(InitialButton, LV_STATE_CHECKED | LV_STATE_FOCUS_KEY);
   lv_obj_scroll_to_view(InitialButton, LV_ANIM_OFF);
   KshimShowEntry(Initial);
-  if (mNotice != NULL) lv_label_set_text(mNotice, "");
   return 0;
 }
 
@@ -678,6 +695,8 @@ int kshim_lvgl_init(kshim_lvgl_t *Context, kshim_framebuffer_t *Framebuffer, Qco
   mKey = LV_KEY_ENTER;
   mKeyReleasePending = 0U;
   mInfoState = false;
+  mBootSlotState = false;
+  mSettingsState = false;
   KshimPlaceScratch();
   kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_FONT);
   if (KshimRenderInitialBackground() != 0) goto Failed;
@@ -860,17 +879,27 @@ void kshim_lvgl_set_entry_roles(kshim_lvgl_t *Context, const kshim_menu_role_t *
   if (mList != NULL) lv_obj_invalidate(mList);
 }
 
+void kshim_lvgl_set_page_title(kshim_lvgl_t *Context, const char *Text)
+{
+  if (kshim_lvgl_ready(Context) && mTitle != NULL && Text != NULL)
+    lv_label_set_text(mTitle, Text);
+}
+
 void kshim_lvgl_set_status(kshim_lvgl_t *Context, const char *Text)
 {
-  /* In the STAR info state the status label carries the device title, so keep
-   * writes on the (hidden) notice instead of clearing that title. */
-  lv_obj_t *Notice;
-  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART && mInfoState) {
-    Notice = mNotice;
-  } else {
-    Notice = mNotice != NULL && !lv_obj_has_flag(mNotice, LV_OBJ_FLAG_HIDDEN) ? mNotice : mStatus;
+  if (!kshim_lvgl_ready(Context) || Text == NULL) return;
+  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART && mNotice != NULL &&
+      (mInfoState || mBootSlotState || mSettingsState)) {
+    /* Reserve visible space for a notice without replacing the entry title. */
+    const lv_font_t *TitleFont = lv_obj_get_style_text_font(mStatus, 0);
+    lv_label_set_text(mNotice, Text);
+    (void)KshimDesignRelayout();
+    lv_obj_set_style_text_font(mStatus, TitleFont, 0);
+    return;
   }
-  if (kshim_lvgl_ready(Context) && Text != NULL && Notice != NULL) lv_label_set_text(Notice, Text);
+  lv_obj_t *Notice = mNotice != NULL && !lv_obj_has_flag(mNotice, LV_OBJ_FLAG_HIDDEN)
+      ? mNotice : mStatus;
+  if (Notice != NULL) lv_label_set_text(Notice, Text);
 }
 
 void kshim_lvgl_set_countdown(kshim_lvgl_t *Context, uint32_t timeout_ms)
@@ -977,4 +1006,6 @@ void kshim_lvgl_deinit(kshim_lvgl_t *Context)
   mTileHeight = 0U;
   mTileWidth = 0U;
   mInfoState = false;
+  mBootSlotState = false;
+  mSettingsState = false;
 }
