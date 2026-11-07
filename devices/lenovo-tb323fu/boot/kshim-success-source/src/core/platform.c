@@ -667,7 +667,7 @@ struct menu_selection {
     size_t candidate_caller[KSHIM_MENU_MAX_ENTRIES];
     size_t candidate_count;
     /* Focus memory for the settings pages. */
-    size_t settings_row, language_entry_row, device_entry_row, default_entry_row;
+    size_t settings_row, language_entry_row, device_entry_row, default_entry_row, ab_entry_row;
     /* Row names that carry the current value and must outlive the fill. */
     char setting_device_name[KSHIM_INFO_VALUE_LEN];
     char setting_default_name[KSHIM_INFO_VALUE_LEN];
@@ -1314,8 +1314,16 @@ static int menu_fill_settings(struct menu_selection *menu)
             menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_FASTBOOT, KSHIM_MENU_DESC_FASTBOOT,
                         MENU_FASTBOOT, 0, KSHIM_MENU_ROLE_FASTBOOT) ||
             menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_EDL, KSHIM_MENU_DESC_EDL,
-                        MENU_EDL, 0, KSHIM_MENU_ROLE_EDL) ||
-            menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
+                        MENU_EDL, 0, KSHIM_MENU_ROLE_EDL))
+            return -1;
+#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
+        menu->ab_entry_row = menu->pages[MENU_PAGE_ADVANCED].count;
+        if (storage_settings_native_ab_supported() &&
+            menu_append(&menu->pages[MENU_PAGE_ADVANCED], kshim_menu_text(KSHIM_TEXT_AB),
+                kshim_menu_text(KSHIM_TEXT_AB_DESC), MENU_AB, 0, KSHIM_MENU_ROLE_UNKNOWN))
+            return -1;
+#endif
+        if (menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
                         MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
             return -1;
     }
@@ -1356,12 +1364,6 @@ static int menu_fill_settings(struct menu_selection *menu)
     if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_MENU_TEXT_LANGUAGE_LABEL,
                     kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC), MENU_LANGUAGE, 0,
                     KSHIM_MENU_ROLE_LANGUAGE))
-        return -1;
-#endif
-#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
-    if (storage_settings_native_ab_supported() &&
-        menu_append(&menu->pages[MENU_PAGE_SETTINGS], kshim_menu_text(KSHIM_TEXT_AB),
-            kshim_menu_text(KSHIM_TEXT_AB_DESC), MENU_AB, 0, KSHIM_MENU_ROLE_UNKNOWN))
         return -1;
 #endif
     if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_MENU_ACTION_BACK,
@@ -1613,7 +1615,8 @@ static int menu_activate(struct menu_selection *menu, size_t index,
             /* Every BACK returns to its immediate parent layer. */
             switch (from) {
             case MENU_PAGE_AB:
-                menu->page = MENU_PAGE_SETTINGS;
+                menu->page = MENU_PAGE_ADVANCED;
+                menu->pages[MENU_PAGE_ADVANCED].initial = menu->ab_entry_row;
                 break;
             case MENU_PAGE_AB_CONFIRM:
                 menu->page = MENU_PAGE_AB;

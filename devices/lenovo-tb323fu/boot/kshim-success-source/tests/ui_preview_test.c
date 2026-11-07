@@ -240,22 +240,25 @@ static void RenderStarAdvanced(const char *Directory, kshim_lvgl_t *Ui,
                                uint32_t LogicalWidth, uint32_t LogicalHeight,
                                const char *Tag)
 {
-    static const kshim_menu_role_t Roles[5] = {
+    static const kshim_menu_role_t Roles[6] = {
         KSHIM_MENU_ROLE_DIAGNOSTIC, KSHIM_MENU_ROLE_RECOVERY,
-        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_BACK,
+        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_UNKNOWN, KSHIM_MENU_ROLE_BACK,
     };
-    const char *Names[5];
-    const char *Descriptions[5];
-    const char *Actions[5];
-    StarFillRoles(Roles, 5U, Names, Descriptions);
+    const char *Names[6];
+    const char *Descriptions[6];
+    const char *Actions[6];
+    StarFillRoles(Roles, 6U, Names, Descriptions);
     Actions[0] = KSHIM_MENU_ACTION_BOOT;
     Actions[1] = KSHIM_MENU_ACTION_ENTER;
     Actions[2] = KSHIM_MENU_ACTION_ENTER;
     Actions[3] = KSHIM_MENU_ACTION_ENTER;
-    Actions[4] = KSHIM_MENU_ACTION_BACK;
+    Names[4] = kshim_menu_text(KSHIM_TEXT_AB);
+    Descriptions[4] = kshim_menu_text(KSHIM_TEXT_AB_DESC);
+    Actions[4] = KSHIM_MENU_ACTION_ENTER;
+    Actions[5] = KSHIM_MENU_ACTION_BACK;
     assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
-        (const char *const *)Descriptions, (const char *const *)Actions, 5U, 0U) == 0);
-    kshim_lvgl_set_entry_roles(Ui, Roles, 5U);
+        (const char *const *)Descriptions, (const char *const *)Actions, 6U, 0U) == 0);
+    kshim_lvgl_set_entry_roles(Ui, Roles, 6U);
     kshim_lvgl_set_countdown(Ui, 0U);
     kshim_lvgl_set_status(Ui, "");
     Advance(Ui, 400U);
@@ -407,22 +410,17 @@ static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
                          const kshim_framebuffer_t *Framebuffer,
                          uint32_t Width,uint32_t Height,const char *Tag)
 {
-    char device[96],target[96],stage[80];
-    snprintf(device,sizeof(device),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT),
-             kshim_menu_text(KSHIM_TEXT_DEVICE_TB323FU_NAME));
-    snprintf(target,sizeof(target),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEFAULT_FMT),
-             kshim_menu_role_name(KSHIM_MENU_ROLE_ANDROID,NULL));
-    const char *names[5]={device,target,KSHIM_MENU_TEXT_LANGUAGE_LABEL,
-        kshim_menu_text(KSHIM_TEXT_AB),KSHIM_MENU_ACTION_BACK};
-    const char *descriptions[5]={kshim_menu_text(KSHIM_TEXT_DEVICE_DESC),
-        kshim_menu_text(KSHIM_TEXT_DEFAULT_DESC),kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC),
-        kshim_menu_text(KSHIM_TEXT_AB_DESC),KSHIM_MENU_DESC_BACK_PARENT};
-    const char *actions[5]={KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,
-        KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_BACK};
-    kshim_menu_role_t roles[5]={KSHIM_MENU_ROLE_DEVICE,KSHIM_MENU_ROLE_DEFAULT,
-        KSHIM_MENU_ROLE_LANGUAGE,KSHIM_MENU_ROLE_UNKNOWN,KSHIM_MENU_ROLE_BACK};
+    char stage[80];
+    const char *names[6]={kshim_menu_role_name(KSHIM_MENU_ROLE_DIAGNOSTIC,NULL),kshim_menu_role_name(KSHIM_MENU_ROLE_RECOVERY,NULL),
+        kshim_menu_role_name(KSHIM_MENU_ROLE_FASTBOOT,NULL),kshim_menu_role_name(KSHIM_MENU_ROLE_EDL,NULL),kshim_menu_text(KSHIM_TEXT_AB),kshim_menu_role_name(KSHIM_MENU_ROLE_BACK,NULL)};
+    const char *descriptions[6]={KSHIM_MENU_DESC_DIAGNOSTIC,KSHIM_MENU_DESC_RECOVERY,
+        KSHIM_MENU_DESC_FASTBOOT,KSHIM_MENU_DESC_EDL,kshim_menu_text(KSHIM_TEXT_AB_DESC),KSHIM_MENU_DESC_BACK};
+    const char *actions[6]={KSHIM_MENU_ACTION_BOOT,KSHIM_MENU_ACTION_ENTER,
+        KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_BACK};
+    kshim_menu_role_t roles[6]={KSHIM_MENU_ROLE_DIAGNOSTIC,KSHIM_MENU_ROLE_RECOVERY,
+        KSHIM_MENU_ROLE_FASTBOOT,KSHIM_MENU_ROLE_EDL,KSHIM_MENU_ROLE_UNKNOWN,KSHIM_MENU_ROLE_BACK};
     for(unsigned page=0;page<4;++page){
-        size_t count=5,initial=3;
+        size_t count=6,initial=4;
         if(page==1){
             names[0]="A";names[1]=kshim_menu_text(KSHIM_TEXT_AB_B);names[2]=KSHIM_MENU_ACTION_BACK;
             descriptions[0]=kshim_menu_text(KSHIM_TEXT_AB_CURRENT);

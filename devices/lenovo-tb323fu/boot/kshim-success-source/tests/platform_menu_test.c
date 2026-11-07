@@ -3174,12 +3174,18 @@ static void test_ab_confirmation(void)
         h.ui_alive=true;h.psci_calls=1;h.psci_fdt=(const void *)(uintptr_t)boot_fdt();
         struct menu_selection menu={0};
         assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1)==0);
-        menu.psci_ready=1;menu.page=MENU_PAGE_SETTINGS;
+        menu.psci_ready=1;menu.page=MENU_PAGE_ADVANCED;
+        for(size_t i=0;i<menu.pages[MENU_PAGE_SETTINGS].count;++i)
+            assert(menu.pages[MENU_PAGE_SETTINGS].actions[i]!=MENU_AB);
         size_t row=0;while(menu.pages[menu.page].actions[row]!=MENU_AB){++row;assert(row<menu.pages[menu.page].count);}
+        assert(row+2==menu.pages[MENU_PAGE_ADVANCED].count);
         const char *failure=NULL;size_t selected=SIZE_MAX;
         assert(menu_activate(&menu,row,&selected,&failure)==2&&!ab_selects);
         assert(menu.page==MENU_PAGE_AB&&menu.pages[MENU_PAGE_AB].initial==2);
         assert(menu.pages[MENU_PAGE_AB].actions[0]==MENU_UNAVAILABLE);
+        assert(menu_activate(&menu,2,&selected,&failure)==2&&!ab_selects);
+        assert(menu.page==MENU_PAGE_ADVANCED&&menu.pages[menu.page].initial==row);
+        assert(menu_activate(&menu,row,&selected,&failure)==2&&!ab_selects);
         assert(menu_activate(&menu,1,&selected,&failure)==2&&!ab_selects);
         assert(menu.page==MENU_PAGE_AB_CONFIRM&&menu.pages[menu.page].initial==1);
         assert(menu_activate(&menu,1,&selected,&failure)==2&&!ab_selects); /* cancel */
