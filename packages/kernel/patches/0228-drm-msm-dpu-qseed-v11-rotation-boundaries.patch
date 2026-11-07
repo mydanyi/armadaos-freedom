@@ -166,10 +166,18 @@ index 91b1327..4e092e4 100644
  
  /**
 diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
-index 437c993..125b260 100644
+index 437c993..f681512 100644
 --- a/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
 +++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
-@@ -129,8 +129,13 @@ static u64 _dpu_plane_calc_bw(const struct dpu_mdss_cfg *catalog,
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/debugfs.h>
+ #include <linux/dma-buf.h>
++#include <linux/of.h>
+ 
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_uapi.h>
+@@ -129,8 +130,13 @@ static u64 _dpu_plane_calc_bw(const struct dpu_mdss_cfg *catalog,
  	u64 scale_factor;
  	int vbp, vpw, vfp;
  
@@ -185,7 +193,7 @@ index 437c993..125b260 100644
  	dst_height = drm_rect_height(&pipe_cfg->dst_rect);
  	fps = drm_mode_vrefresh(mode);
  	vbp = mode->vtotal - mode->vsync_end;
-@@ -529,6 +534,57 @@ static const struct dpu_csc_cfg *_dpu_plane_get_csc(struct dpu_sw_pipe *pipe,
+@@ -529,6 +535,57 @@ static const struct dpu_csc_cfg *_dpu_plane_get_csc(struct dpu_sw_pipe *pipe,
  	return csc_ptr;
  }
  
@@ -243,7 +251,7 @@ index 437c993..125b260 100644
  static void _dpu_plane_setup_scaler(struct dpu_sw_pipe *pipe,
  		const struct msm_format *fmt, bool color_fill,
  		struct dpu_sw_pipe_cfg *pipe_cfg)
-@@ -560,6 +616,9 @@ static void _dpu_plane_setup_scaler(struct dpu_sw_pipe *pipe,
+@@ -560,6 +617,9 @@ static void _dpu_plane_setup_scaler(struct dpu_sw_pipe *pipe,
  	_dpu_plane_setup_pixel_ext(&scaler3_cfg, &pixel_ext,
  			src_width, src_height, info->hsub, info->vsub);
  
@@ -253,7 +261,7 @@ index 437c993..125b260 100644
  	if (pipe_hw->ops.setup_pe)
  		pipe_hw->ops.setup_pe(pipe_hw,
  				&pixel_ext);
-@@ -582,7 +641,7 @@ static void _dpu_plane_color_fill_pipe(struct dpu_plane_state *pstate,
+@@ -582,7 +642,7 @@ static void _dpu_plane_color_fill_pipe(struct dpu_plane_state *pstate,
  				       u32 fill_color,
  				       const struct msm_format *fmt)
  {
@@ -262,7 +270,7 @@ index 437c993..125b260 100644
  
  	/* update sspp */
  	if (!pipe->sspp->ops.setup_solidfill)
-@@ -731,6 +790,76 @@ static int dpu_plane_check_inline_rotation(struct dpu_plane *pdpu,
+@@ -731,6 +791,83 @@ static int dpu_plane_check_inline_rotation(struct dpu_plane *pdpu,
  	return 0;
  }
  
@@ -278,8 +286,15 @@ index 437c993..125b260 100644
 +	cfg->qseed3_v11_valid = false;
 +
 +	/* Catalog version 3.5 identifies QSEED V11. */
-+	if (sblk->scaler_blk.version != 0x30005)
-+		return 0;
++	if (sblk->scaler_blk.version != 0x30005) {
++		/*
++		 * Elden (Y700 Gen4 TB322FC) stock library uses the
++		 * QSEED 3.4 native sampling path; allow only that board.
++		 */
++		if (sblk->scaler_blk.version != 0x30004 ||
++		    !of_machine_is_compatible("lenovo,elden"))
++			return 0;
++	}
 +	if (MSM_FORMAT_IS_YUV(fmt))
 +		return 0;
 +	if (!(cfg->rotation & DRM_MODE_ROTATE_90))
@@ -339,7 +354,7 @@ index 437c993..125b260 100644
  static int dpu_plane_atomic_check_pipe(struct dpu_plane *pdpu,
  		struct dpu_sw_pipe *pipe,
  		struct dpu_sw_pipe_cfg *pipe_cfg,
-@@ -815,6 +944,10 @@ static int dpu_plane_atomic_check_pipe(struct dpu_plane *pdpu,
+@@ -815,6 +952,10 @@ static int dpu_plane_atomic_check_pipe(struct dpu_plane *pdpu,
  			return ret;
  	}
  
@@ -350,7 +365,7 @@ index 437c993..125b260 100644
  	/* max clk check */
  	if (_dpu_plane_calc_clk(mode, pipe_cfg) > kms->perf.max_core_clk_rate) {
  		DPU_DEBUG_PLANE(pdpu, "plane exceeds max mdp core clk limits\n");
-@@ -963,6 +1096,8 @@ static int dpu_plane_split(struct drm_plane *plane,
+@@ -963,6 +1104,8 @@ static int dpu_plane_split(struct drm_plane *plane,
  		r_pipe_cfg = &pstate->pipe_cfg[cfg_idx + 1];
  		/* The split calculation below uses already-rotated rectangles. */
  		pipe_cfg->rotation = DRM_MODE_ROTATE_0;
