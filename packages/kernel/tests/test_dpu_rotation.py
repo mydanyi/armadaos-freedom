@@ -81,7 +81,7 @@ struct drm_display_mode { int hdisplay, vdisplay, vtotal, fps; };
 static int drm_mode_vrefresh(const struct drm_display_mode *m) { return m->fps; }
 #define do_div(n,d) ((n)/=(d))
 struct drm_crtc_state { struct drm_display_mode adjusted_mode; unsigned int num_lm; };
-struct dpu_sw_pipe_cfg { struct drm_rect src_rect, dst_rect; unsigned int rotation; };
+struct dpu_sw_pipe_cfg { struct drm_rect src_rect, dst_rect; unsigned int rotation; int mixer_x; bool qseed3_v11_valid; };
 struct dpu_plane_state {
  struct drm_plane_state base;
  struct dpu_sw_pipe_cfg pipe_cfg[PIPES_PER_PLANE];
@@ -175,7 +175,7 @@ static void split_case(unsigned int rotation, int height, bool virt,
 
 static void multirect_case(unsigned int rotation, bool expected)
 {
- struct dpu_sw_pipe_cfg cfg={{0,0,512,512},{0,0,512,512},rotation};
+ struct dpu_sw_pipe_cfg cfg={{0,0,512,512},{0,0,512,512},rotation,0,false};
  struct msm_format fmt={.is_yuv=false};
  cases++;
  CHECK(!!dpu_plane_is_multirect_capable(NULL,&cfg,&fmt)==expected);
@@ -207,7 +207,7 @@ static void clock_case(unsigned int rotation, int src_w, int src_h,
                        int dst_w, int dst_h, u64 expected)
 {
  struct drm_display_mode mode={.vtotal=3120,.fps=165};
- struct dpu_sw_pipe_cfg cfg={{0,0,src_w,src_h},{0,0,dst_w,dst_h},rotation};
+ struct dpu_sw_pipe_cfg cfg={{0,0,src_w,src_h},{0,0,dst_w,dst_h},rotation,0,false};
  cases++;
  CHECK(_dpu_plane_calc_clk(&mode,&cfg)==expected);
 }

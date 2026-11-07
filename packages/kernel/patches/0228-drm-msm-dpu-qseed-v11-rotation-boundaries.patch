@@ -1,0 +1,376 @@
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_qseed3_v11.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_qseed3_v11.h
+new file mode 100644
+index 0000000..63a2204
+--- /dev/null
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_qseed3_v11.h
+@@ -0,0 +1,109 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef DPU_HW_QSEED3_V11_H
++#define DPU_HW_QSEED3_V11_H
++
++#include <linux/types.h>
++#include <linux/math64.h>
++#include <linux/errno.h>
++
++struct dpu_qseed3_axis {
++	u32 phase_step;
++	u32 init_phase;
++	u32 preload;
++	u32 src_size;
++	s32 fetch_before;
++	s32 fetch_after;
++};
++
++static inline s64 dpu_qseed3_min64(s64 a, s64 b)
++{
++	return a < b ? a : b;
++}
++
++/*
++ * QSEED V11 scaling constraints:
++ * - RGB without predownscale.
++ * - Phase steps and initial phases use Q21; geometry inputs are pixels.
++ * - Whole-plane ratio and offset make adjacent pipes share sampling grid.
++ * - Support/base preload V11X5/12, Y1/4.
++ * - Negative fetch means cropping; missing outer pixels are handled by
++ *   dynamic extension with preload, not explicit repeat.
++ * Not a claim for all formats or verified hardware.
++ */
++static inline int dpu_qseed3_v11_axis(u32 full_src, u32 full_dst,
++				      u32 src_start, u32 src_len,
++				      u32 dst_start, u32 dst_len,
++				      u32 support, u32 base_preload,
++				      struct dpu_qseed3_axis *out)
++{
++	s64 step, raw, requestedbefore, requestedafter, delta;
++	s64 remaining, wanted, before, after, total, preload;
++
++	if (!full_src || !full_dst || !src_len || !dst_len)
++		return -EINVAL;
++	if (full_src > 65535 || full_dst > 65535)
++		return -EINVAL;
++	if (src_start > full_src || src_len > full_src - src_start)
++		return -EINVAL;
++	if (dst_start > full_dst || dst_len > full_dst - dst_start)
++		return -EINVAL;
++	if (support > 12)
++		return -EINVAL;
++
++	step = (s64)div_u64((u64)full_src << 21, full_dst);
++	if (step == 0 || step > 0xffffffffLL)
++		return -ERANGE;
++
++	raw = ((s64)step - (1 << 21)) >> 1;
++	raw += 16384 + (s64)dst_start * step - ((s64)src_start << 21);
++
++	requestedbefore = (s64)support - (raw >> 21);
++
++	delta = raw + (s64)(dst_len - 1) * step - ((s64)(src_len - 1) << 21);
++	requestedafter = (s64)support + 1 + (delta >> 21);
++
++	remaining = (s64)full_src - src_start - src_len;
++	wanted = (s64)src_len + requestedbefore + requestedafter;
++	if (wanted < 1)
++		wanted = 1;
++
++	if (requestedbefore >= 0 && requestedafter >= 0) {
++		before = dpu_qseed3_min64(requestedbefore, (s64)src_start);
++		after = dpu_qseed3_min64(requestedafter, remaining);
++	} else if (requestedbefore < 0 && requestedafter >= 0) {
++		before = -dpu_qseed3_min64(-requestedbefore, (s64)src_len - 1);
++		after = dpu_qseed3_min64(requestedafter, remaining);
++		after = dpu_qseed3_min64(after, wanted - 1);
++	} else if (requestedbefore >= 0 && requestedafter < 0) {
++		before = dpu_qseed3_min64(requestedbefore, (s64)src_start);
++		before = dpu_qseed3_min64(before, wanted - 1);
++		after = -dpu_qseed3_min64(-requestedafter, (s64)src_len - 1);
++	} else {
++		before = -dpu_qseed3_min64(-requestedbefore, (s64)src_len - 1);
++		after = -dpu_qseed3_min64(-requestedafter,
++					(s64)src_len + before - 1);
++	}
++
++	total = (s64)src_len + before + after;
++	preload = (s64)base_preload + before - requestedbefore;
++
++	if (total <= 0 || total > 65535)
++		return -ERANGE;
++	if (preload < 0 || preload > 127)
++		return -ERANGE;
++	if (before < -128 || before > 127)
++		return -ERANGE;
++	if (after < -128 || after > 127)
++		return -ERANGE;
++
++	out->phase_step = (u32)step;
++	out->init_phase = (u32)raw & ((1 << 21) - 1);
++	out->preload = (u32)preload;
++	out->src_size = (u32)total;
++	out->fetch_before = (s32)before;
++	out->fetch_after = (s32)after;
++
++	return 0;
++}
++
++#endif
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.c
+index 1aeca92..7dc5e98 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.c
+@@ -431,7 +431,7 @@ static void dpu_hw_sspp_setup_pe_config(struct dpu_hw_sspp *ctx,
+ 
+ 	/* color 3 */
+ 	DPU_REG_WRITE(c, SSPP_SW_PIX_EXT_C3_LR, lr_pe[3]);
+-	DPU_REG_WRITE(c, SSPP_SW_PIX_EXT_C3_TB, lr_pe[3]);
++	DPU_REG_WRITE(c, SSPP_SW_PIX_EXT_C3_TB, tb_pe[3]);
+ 	DPU_REG_WRITE(c, SSPP_SW_PIX_EXT_C3_REQ_PIXELS,
+ 			tot_req_pixels[3]);
+ }
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.h
+index 91b1327..4e092e4 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_sspp.h
+@@ -10,6 +10,7 @@
+ #include "dpu_hw_util.h"
+ #include "dpu_formats.h"
+ #include "dpu_hw_reg_dma.h"
++#include "dpu_hw_qseed3_v11.h"
+ 
+ struct drm_property_blob;
+ 
+@@ -149,11 +150,26 @@ struct dpu_hw_pixel_ext {
+  *             such as decimation, flip etc to program this field
+  * @dst_rect: destination ROI.
+  * @rotation: simplified drm rotation hint
++ * @mixer_x: global horizontal destination origin of the mixer this pipe
++ *           drives. Used to translate the per-pipe dst_rect back to global
++ *           destination coordinates when computing QSEED3 V11 axes.
++ * @qseed3_v11_valid: true when the QSEED3 V11 RGB axis calculator produced
++ *                    valid per-axis preload/phase/extension data for this
++ *                    pipe (inline 90/270 rotation on RGB, QSEED3 V11 scaler).
++ * @qseed3_v11: cached QSEED3 V11 axis results, [0] = X, [1] = Y. These are
++ *              computed on post-rotation pipe coordinates.
++ * @src_ext_rect: physical pre-rotation extended source rectangle derived from
++ *                the post-rotation axis fetch_before/fetch_after values. Only
++ *                valid when @qseed3_v11_valid is true.
+  */
+ struct dpu_sw_pipe_cfg {
+ 	struct drm_rect src_rect;
+ 	struct drm_rect dst_rect;
+ 	unsigned int rotation;
++	int mixer_x;
++	bool qseed3_v11_valid;
++	struct dpu_qseed3_axis qseed3_v11[2];
++	struct drm_rect src_ext_rect;
+ };
+ 
+ /**
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
+index 437c993..f681512 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_plane.c
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/debugfs.h>
+ #include <linux/dma-buf.h>
++#include <linux/of.h>
+ 
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_uapi.h>
+@@ -129,8 +130,13 @@ static u64 _dpu_plane_calc_bw(const struct dpu_mdss_cfg *catalog,
+ 	u64 scale_factor;
+ 	int vbp, vpw, vfp;
+ 
+-	src_width = drm_rect_width(&pipe_cfg->src_rect);
+-	src_height = drm_rect_height(&pipe_cfg->src_rect);
++	if (pipe_cfg->qseed3_v11_valid) {
++		src_width = drm_rect_width(&pipe_cfg->src_ext_rect);
++		src_height = drm_rect_height(&pipe_cfg->src_ext_rect);
++	} else {
++		src_width = drm_rect_width(&pipe_cfg->src_rect);
++		src_height = drm_rect_height(&pipe_cfg->src_rect);
++	}
+ 	dst_height = drm_rect_height(&pipe_cfg->dst_rect);
+ 	fps = drm_mode_vrefresh(mode);
+ 	vbp = mode->vtotal - mode->vsync_end;
+@@ -529,6 +535,57 @@ static const struct dpu_csc_cfg *_dpu_plane_get_csc(struct dpu_sw_pipe *pipe,
+ 	return csc_ptr;
+ }
+ 
++static void dpu_plane_setup_qseed3_v11(struct dpu_sw_pipe_cfg *pipe_cfg,
++				       struct dpu_hw_scaler3_cfg *scale_cfg,
++				       struct dpu_hw_pixel_ext *pixel_ext)
++{
++	const struct dpu_qseed3_axis *ax = &pipe_cfg->qseed3_v11[0];
++	const struct dpu_qseed3_axis *ay = &pipe_cfg->qseed3_v11[1];
++	const struct drm_rect *src = &pipe_cfg->src_rect;
++	const struct drm_rect *ext = &pipe_cfg->src_ext_rect;
++	int fetch_left, fetch_right, fetch_top, fetch_btm;
++	int i;
++
++	for (i = 0; i < DPU_MAX_PLANES; i++) {
++		scale_cfg->phase_step_x[i] = ax->phase_step;
++		scale_cfg->phase_step_y[i] = ay->phase_step;
++		scale_cfg->init_phase_x[i] = ax->init_phase;
++		scale_cfg->init_phase_y[i] = ay->init_phase;
++		scale_cfg->preload_x[i] = ax->preload;
++		scale_cfg->preload_y[i] = ay->preload;
++		scale_cfg->src_width[i] = ax->src_size;
++		scale_cfg->src_height[i] = ay->src_size;
++		scale_cfg->enable = 1;
++	}
++
++	fetch_left = src->x1 - ext->x1;
++	fetch_right = ext->x2 - src->x2;
++	fetch_top = src->y1 - ext->y1;
++	fetch_btm = ext->y2 - src->y2;
++
++	for (i = 0; i < DPU_MAX_PLANES; i++) {
++		pixel_ext->left_ftch[i] = fetch_left;
++		pixel_ext->right_ftch[i] = fetch_right;
++		pixel_ext->top_ftch[i] = fetch_top;
++		pixel_ext->btm_ftch[i] = fetch_btm;
++
++		pixel_ext->num_ext_pxls_left[i] = fetch_left;
++		pixel_ext->num_ext_pxls_right[i] = fetch_right;
++		pixel_ext->num_ext_pxls_top[i] = fetch_top;
++		pixel_ext->num_ext_pxls_btm[i] = fetch_btm;
++
++		pixel_ext->left_rpt[i] = 0;
++		pixel_ext->right_rpt[i] = 0;
++		pixel_ext->top_rpt[i] = 0;
++		pixel_ext->btm_rpt[i] = 0;
++
++		pixel_ext->roi_w[i] = drm_rect_width(src);
++		pixel_ext->roi_h[i] = drm_rect_height(src);
++	}
++
++	pixel_ext->enable_pxl_ext = 1;
++}
++
+ static void _dpu_plane_setup_scaler(struct dpu_sw_pipe *pipe,
+ 		const struct msm_format *fmt, bool color_fill,
+ 		struct dpu_sw_pipe_cfg *pipe_cfg)
+@@ -560,6 +617,9 @@ static void _dpu_plane_setup_scaler(struct dpu_sw_pipe *pipe,
+ 	_dpu_plane_setup_pixel_ext(&scaler3_cfg, &pixel_ext,
+ 			src_width, src_height, info->hsub, info->vsub);
+ 
++	if (!color_fill && pipe_cfg->qseed3_v11_valid)
++		dpu_plane_setup_qseed3_v11(pipe_cfg, &scaler3_cfg, &pixel_ext);
++
+ 	if (pipe_hw->ops.setup_pe)
+ 		pipe_hw->ops.setup_pe(pipe_hw,
+ 				&pixel_ext);
+@@ -582,7 +642,7 @@ static void _dpu_plane_color_fill_pipe(struct dpu_plane_state *pstate,
+ 				       u32 fill_color,
+ 				       const struct msm_format *fmt)
+ {
+-	struct dpu_sw_pipe_cfg pipe_cfg;
++	struct dpu_sw_pipe_cfg pipe_cfg = {};
+ 
+ 	/* update sspp */
+ 	if (!pipe->sspp->ops.setup_solidfill)
+@@ -731,6 +791,83 @@ static int dpu_plane_check_inline_rotation(struct dpu_plane *pdpu,
+ 	return 0;
+ }
+ 
++static int dpu_plane_check_qseed3_v11(struct dpu_sw_pipe *pipe,
++		struct dpu_sw_pipe_cfg *cfg,
++		struct drm_plane_state *state,
++		const struct msm_format *fmt)
++{
++	const struct dpu_sspp_sub_blks *sblk = pipe->sspp->cap->sblk;
++	struct drm_rect full_src, post_src, full_dst, post_dst, ext;
++	int ret;
++
++	cfg->qseed3_v11_valid = false;
++
++	/* Catalog version 3.5 identifies QSEED V11. */
++	if (sblk->scaler_blk.version != 0x30005) {
++		/*
++		 * Elden (Y700 Gen4 TB322FC) stock library uses the
++		 * QSEED 3.4 native sampling path; allow only that board.
++		 */
++		if (sblk->scaler_blk.version != 0x30004 ||
++		    !of_machine_is_compatible("lenovo,elden"))
++			return 0;
++	}
++	if (MSM_FORMAT_IS_YUV(fmt))
++		return 0;
++	if (!(cfg->rotation & DRM_MODE_ROTATE_90))
++		return 0;
++
++	drm_rect_fp_to_int(&full_src, &state->src);
++	post_src = cfg->src_rect;
++	drm_rect_rotate(&full_src, state->fb->width, state->fb->height,
++			state->rotation);
++	drm_rect_rotate(&post_src, state->fb->width, state->fb->height,
++			state->rotation);
++
++	post_dst = cfg->dst_rect;
++	post_dst.x1 += cfg->mixer_x;
++	post_dst.x2 += cfg->mixer_x;
++	full_dst = state->dst;
++
++	ret = dpu_qseed3_v11_axis(drm_rect_width(&full_src), drm_rect_width(&full_dst),
++				  post_src.x1 - full_src.x1, drm_rect_width(&post_src),
++				  post_dst.x1 - full_dst.x1, drm_rect_width(&post_dst),
++				  5, 12, &cfg->qseed3_v11[0]);
++	if (ret)
++		return ret;
++
++	ret = dpu_qseed3_v11_axis(drm_rect_height(&full_src), drm_rect_height(&full_dst),
++				  post_src.y1 - full_src.y1, drm_rect_height(&post_src),
++				  post_dst.y1 - full_dst.y1, drm_rect_height(&post_dst),
++				  1, 4, &cfg->qseed3_v11[1]);
++	if (ret)
++		return ret;
++
++	ext = post_src;
++	ext.x1 -= cfg->qseed3_v11[0].fetch_before;
++	ext.x2 += cfg->qseed3_v11[0].fetch_after;
++	ext.y1 -= cfg->qseed3_v11[1].fetch_before;
++	ext.y2 += cfg->qseed3_v11[1].fetch_after;
++
++	drm_rect_rotate_inv(&ext, state->fb->width, state->fb->height,
++			    state->rotation);
++
++	if (drm_rect_height(&ext) > sblk->rotation_cfg->rot_maxheight)
++		return -ERANGE;
++
++	if (ext.x1 < 0 || ext.y1 < 0 ||
++	    ext.x2 > state->fb->width || ext.y2 > state->fb->height)
++		return -ERANGE;
++
++	if (drm_rect_width(&ext) <= 0 || drm_rect_height(&ext) <= 0)
++		return -ERANGE;
++
++	cfg->src_ext_rect = ext;
++	cfg->qseed3_v11_valid = true;
++
++	return 0;
++}
++
+ static int dpu_plane_atomic_check_pipe(struct dpu_plane *pdpu,
+ 		struct dpu_sw_pipe *pipe,
+ 		struct dpu_sw_pipe_cfg *pipe_cfg,
+@@ -815,6 +952,10 @@ static int dpu_plane_atomic_check_pipe(struct dpu_plane *pdpu,
+ 			return ret;
+ 	}
+ 
++	ret = dpu_plane_check_qseed3_v11(pipe, pipe_cfg, new_plane_state, fmt);
++	if (ret)
++		return ret;
++
+ 	/* max clk check */
+ 	if (_dpu_plane_calc_clk(mode, pipe_cfg) > kms->perf.max_core_clk_rate) {
+ 		DPU_DEBUG_PLANE(pdpu, "plane exceeds max mdp core clk limits\n");
+@@ -963,6 +1104,8 @@ static int dpu_plane_split(struct drm_plane *plane,
+ 		r_pipe_cfg = &pstate->pipe_cfg[cfg_idx + 1];
+ 		/* The split calculation below uses already-rotated rectangles. */
+ 		pipe_cfg->rotation = DRM_MODE_ROTATE_0;
++		pipe_cfg->mixer_x = mixer_rect.x1;
++		pipe_cfg->qseed3_v11_valid = false;
+ 
+ 		drm_rect_fp_to_int(&pipe_cfg->src_rect, &new_plane_state->src);
+ 
