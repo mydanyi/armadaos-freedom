@@ -342,3 +342,4 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0745-ASoC-dt-bindings-qcom-sm8250-add-tb710fu-card.patch
 0746-ASoC-qcom-sc8280xp-add-tb710fu-card.patch
 0227-Bluetooth-qca-add-WCN7861-peripheral-setup.patch
+0228-drm-msm-dpu-qseed-v11-rotation-boundaries.patch
