@@ -485,16 +485,6 @@ static size_t snap_row(const info_snap_t *snap, const char *name)
  * description with one localized multi-line summary of "Label: value" fields
  * joined by newlines.  These narrow locators read that aggregate without
  * mirroring the product formatter. */
-static void summary_expect(const char *summary, const char *label,
-                           const char *value)
-{
-    char needle[INFO_TEXT_LEN];
-    int n = snprintf(needle, sizeof(needle), "%s: %s", label, value);
-    assert(n > 0 && (size_t)n < sizeof(needle));
-    assert(summary && strstr(summary, needle) != NULL);
-}
-/* Advance past the next "Label: value" starting at Cursor so the caller can
- * prove the fields appear in the documented order. */
 static const char *summary_after(const char *cursor, const char *label,
                                  const char *value)
 {
@@ -504,21 +494,6 @@ static const char *summary_after(const char *cursor, const char *label,
     const char *hit = cursor ? strstr(cursor, needle) : NULL;
     assert(hit);
     return hit + n;
-}
-/* Locate a field value that never wraps (the model) after "Label: " and report
- * its length up to the next field newline. */
-static const char *summary_field(const char *summary, const char *label,
-                                 size_t *length)
-{
-    char needle[INFO_TEXT_LEN];
-    int n = snprintf(needle, sizeof(needle), "%s: ", label);
-    assert(n > 0 && (size_t)n < sizeof(needle));
-    const char *hit = summary ? strstr(summary, needle) : NULL;
-    assert(hit);
-    const char *value = hit + n;
-    const char *end = strchr(value, '\n');
-    *length = end ? (size_t)(end - value) : strlen(value);
-    return value;
 }
 int kshim_lvgl_set_entries_described(kshim_lvgl_t *context,
                                     const char *const *names,
@@ -640,6 +615,8 @@ void kshim_lvgl_set_countdown(kshim_lvgl_t *context, uint32_t timeout)
     if (timeout) { h.countdown_first = timeout; ++h.countdown_started; }
     else ++h.countdown_zero;
 }
+void kshim_lvgl_set_page_title(kshim_lvgl_t *context, const char *text)
+{ (void)context; assert(text && text[0]); }
 void kshim_lvgl_set_status(kshim_lvgl_t *context, const char *text)
 {
     (void)context; assert(text);
@@ -1488,10 +1465,9 @@ static void info_drive(unsigned serial, size_t *selected)
 /* Full summary rendering plus the read-only return path. */
 static void test_device_info_page(void)
 {
-    static const kshim_menu_text_id label_ids[7] = {
-        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
-        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
-        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
+    static const kshim_menu_text_id label_ids[5] = {
+        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_RAM,
+        KSHIM_TEXT_INFO_SLOT, KSHIM_TEXT_INFO_VERSION,
     };
     const char *info_label = NULL;
     for (unsigned serial = 0; serial < 3; ++serial) {
@@ -1549,30 +1525,26 @@ static void test_device_info_page(void)
         }
         /* Only the info row changes: description becomes the summary and the
          * action becomes Back (the summary is the DEVICE_INFO row + Back). */
-        assert(snap_action(page, row) && strcmp(snap_action(page, row), KSHIM_MENU_ACTION_BACK) == 0);
+        assert(snap_action(page, row) && strcmp(snap_action(page, row), KSHIM_STR_BACK) == 0);
         const char *summary = snap_desc(page, row);
         assert(summary && summary[0]);
 
         /* No standalone read-only field rows survive. */
-        for (size_t i = 0; i < 7; ++i)
+        for (size_t i = 0; i < 5; ++i)
             for (size_t j = 0; j < page->count; ++j)
                 assert(strcmp(page->names[j], kshim_menu_text(label_ids[i])) != 0);
 
-        /* The aggregate carries all seven localized label/value pairs in order.
+        /* The aggregate carries all five localized label/value pairs in order.
          * RAM is the localized RAM label plus the numeric DT-reported MiB, with
-         * no duplicated prefix; values come from the record and the framebuffer. */
+         * no duplicated prefix; values come from the device record. */
         char ram[64];
         snprintf(ram, sizeof(ram), "%llu MiB",
                  (unsigned long long)(h.info_fixture.dt_reported_ram_bytes / (UINT64_C(1024) * 1024)));
         const char *cursor = summary;
         cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_BOARD), "TB323FU");
         cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_SOC), "SM8750");
-        cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_MODEL), "Lenovo TB323FU");
-        cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_COMPATIBLE),
-                               "lenovo,tb323fu\nqcom,sm8750");
         cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_RAM), ram);
-        cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_FRAMEBUFFER),
-                               "800x600 stride 3200");
+        cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_SLOT), kshim_menu_text(KSHIM_TEXT_UNKNOWN));
         cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_VERSION),
                                expected_version());
         (void)cursor;
@@ -1591,10 +1563,9 @@ static void test_device_info_page(void)
  * empty text. */
 static void test_device_info_unknown_values(void)
 {
-    static const kshim_menu_text_id label_ids[7] = {
-        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
-        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
-        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
+    static const kshim_menu_text_id label_ids[5] = {
+        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_RAM,
+        KSHIM_TEXT_INFO_SLOT, KSHIM_TEXT_INFO_VERSION,
     };
     setup(false, 1);
     h.info_mode = true;
@@ -1615,103 +1586,31 @@ static void test_device_info_unknown_values(void)
     assert(page->count == h.info_snaps[0].count);
     const char *summary = snap_desc(page, info_home_row());
     assert(summary && summary[0]);
-    /* The six hardware fields are unknown; the version field is the build
+    /* The four device fields are unknown; the version field is the build
      * string when VERSION is compiled in, otherwise the localized Unknown. */
     const char *cursor = summary;
-    for (size_t i = 0; i < 6; ++i)
+    for (size_t i = 0; i < 4; ++i)
         cursor = summary_after(cursor, kshim_menu_text(label_ids[i]), unknown);
-    cursor = summary_after(cursor, kshim_menu_text(label_ids[6]), expected_version());
+    cursor = summary_after(cursor, kshim_menu_text(label_ids[4]), expected_version());
     (void)cursor;
 }
-/* Compatible variants: several NUL-separated entries, an ellipsis-truncated
- * list and an ellipsis-truncated model, inspected as substrings of the single
- * aggregate summary. */
+/* Internal DT details stay hidden even when the source record contains them. */
 static void test_device_info_compatible_variants(void)
 {
-    const char *compat_label = kshim_menu_text(KSHIM_TEXT_INFO_COMPATIBLE);
-    const char *model_label = kshim_menu_text(KSHIM_TEXT_INFO_MODEL);
-    static const char three[] = "aa\0bb\0cc\0";
-
-    /* Three whole entries are joined with newlines, in original order. */
     setup(false, 1);
     h.info_mode = true;
     h.info_fixture = fixture_info();
-    memset(h.info_fixture.compatible, 0, sizeof(h.info_fixture.compatible));
-    memcpy(h.info_fixture.compatible, three, sizeof(three) - 1);
-    h.info_fixture.compatible_length = sizeof(three) - 1;
-    h.info_fixture.compatible_known = true;
+    h.info_fixture.model_truncated = true;
+    h.info_fixture.compatible_truncated = true;
     ui_at(5, (int)info_home_row(), 0);
     ui_at(10, (int)info_home_row(), 0);
     ui_at(15, 0, 0);
     size_t selected = SIZE_MAX;
     assert(kshim_platform_select_localized_info(boot_fdt(), h.names, h.descriptions,
             NULL, &h.info_fixture, 1, 0, 20, 0, &selected) == 0);
-    assert(selected == 0);
-    summary_expect(snap_desc(&h.info_snaps[1], info_home_row()), compat_label, "aa\nbb\ncc");
-
-    /* A truncated list and a truncated model both end in the U+2026 ellipsis. */
-    setup(false, 1);
-    h.info_mode = true;
-    h.info_fixture = fixture_info();
-    h.info_fixture.compatible_truncated = true;
-    memset(h.info_fixture.model, 'M', sizeof(h.info_fixture.model) - 1);
-    h.info_fixture.model[sizeof(h.info_fixture.model) - 1] = '\0';
-    h.info_fixture.model_known = true;
-    h.info_fixture.model_truncated = true;
-    ui_at(5, (int)info_home_row(), 0);
-    ui_at(10, (int)info_home_row(), 0);
-    ui_at(15, 0, 0);
-    assert(kshim_platform_select_localized_info(boot_fdt(), h.names, h.descriptions,
-            NULL, &h.info_fixture, 1, 0, 20, 0, &selected) == 0);
     const char *summary = snap_desc(&h.info_snaps[1], info_home_row());
-    size_t model_len = 0;
-    const char *model = summary_field(summary, model_label, &model_len);
-    assert(model_len == KSHIM_INFO_MODEL_MAX + 3);
-    assert(strncmp(model, "MMMM", 4) == 0);
-    /* The value is a substring of the aggregate summary, so only its own last
-     * three bytes are the ellipsis; the next field starts right after. */
-    assert(strncmp(model + model_len - 3, "\xe2\x80\xa6", 3) == 0);
-    summary_expect(summary, compat_label, "lenovo,tb323fu\nqcom,sm8750\xe2\x80\xa6");
-
-    /* Four tiny entries: only the first three lines render, with an ellipsis
-     * marking the fourth on the last rendered line. */
-    static const char four[] = "aa\0bb\0cc\0dd\0";
-    setup(false, 1);
-    h.info_mode = true;
-    h.info_fixture = fixture_info();
-    memset(h.info_fixture.compatible, 0, sizeof(h.info_fixture.compatible));
-    memcpy(h.info_fixture.compatible, four, sizeof(four) - 1);
-    h.info_fixture.compatible_length = sizeof(four) - 1;
-    h.info_fixture.compatible_known = true;
-    ui_at(5, (int)info_home_row(), 0);
-    ui_at(10, (int)info_home_row(), 0);
-    ui_at(15, 0, 0);
-    assert(kshim_platform_select_localized_info(boot_fdt(), h.names, h.descriptions,
-            NULL, &h.info_fixture, 1, 0, 20, 0, &selected) == 0);
-    summary_expect(snap_desc(&h.info_snaps[1], info_home_row()), compat_label,
-                   "aa\nbb\ncc\xe2\x80\xa6");
-
-    /* A single oversized entry keeps its original prefix and ends with the
-     * ellipsis; it must not become Unknown just because it does not fit. */
-    setup(false, 1);
-    h.info_mode = true;
-    h.info_fixture = fixture_info();
-    memset(h.info_fixture.compatible, 0, sizeof(h.info_fixture.compatible));
-    for (size_t i = 0; i < 60; ++i)
-        h.info_fixture.compatible[i] = (char)('a' + (int)(i % 26));
-    h.info_fixture.compatible_length = 61; /* 60 characters plus the NUL */
-    h.info_fixture.compatible_known = true;
-    ui_at(5, (int)info_home_row(), 0);
-    ui_at(10, (int)info_home_row(), 0);
-    ui_at(15, 0, 0);
-    assert(kshim_platform_select_localized_info(boot_fdt(), h.names, h.descriptions,
-            NULL, &h.info_fixture, 1, 0, 20, 0, &selected) == 0);
-    size_t over_len = 0;
-    const char *oversized = summary_field(snap_desc(&h.info_snaps[1], info_home_row()),
-                                          compat_label, &over_len);
-    assert(over_len == 44 + 3);
-    assert(strncmp(oversized, h.info_fixture.compatible, 44) == 0);
-    assert(strncmp(oversized + 44, "\xe2\x80\xa6", 3) == 0);
+    assert(!strstr(summary, "Lenovo TB323FU") && !strstr(summary, "lenovo,tb323fu"));
+    assert(!strstr(summary, "stride") && !strstr(summary, "DT "));
 }
 /* The fixed-size pages still reject an overflow instead of dropping a row. */
 static void test_device_info_capacity(void)
@@ -1807,21 +1706,17 @@ static void test_device_info_language_refresh(void)
     for (size_t i = 0; i < page_en->count; ++i)
         assert(strcmp(page_en->names[i], home_en->names[i]) == 0);
     assert(snap_action(page_en, info_home_row()) &&
-           strcmp(snap_action(page_en, info_home_row()), KSHIM_MENU_ACTION_BACK) == 0);
+           strcmp(snap_action(page_en, info_home_row()), KSHIM_STR_BACK) == 0);
 
-    /* The same info row description is now English: the seven localized field
-     * labels, the English Unknown for the unknown fields and this fixture's
-     * real framebuffer value. */
+    /* The same info row description is now English: the five localized field
+     * labels and the English Unknown for unavailable fields. */
     const char *unknown = kshim_menu_text(KSHIM_TEXT_UNKNOWN);
     const char *cursor = snap_desc(page_en, info_home_row());
     assert(cursor && cursor[0]);
     cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_BOARD), unknown);
     cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_SOC), unknown);
-    cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_MODEL), unknown);
-    cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_COMPATIBLE), unknown);
     cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_RAM), unknown);
-    cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_FRAMEBUFFER),
-                           "800x600 stride 3200");
+    cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_SLOT), unknown);
     cursor = summary_after(cursor, kshim_menu_text(KSHIM_TEXT_INFO_VERSION),
                            expected_version());
     (void)cursor;
@@ -2647,7 +2542,7 @@ static void test_settings_default_invalidated(void)
     /* Settings page after the device change still shows the internal default. */
     const info_snap_t *settings_page = &h.info_snaps[3];
     const char *default_row = settings_page->names[1];
-    assert(strstr(default_row, kshim_menu_role_name(KSHIM_MENU_ROLE_INTERNAL, NULL)) != NULL);
+    assert(strstr(default_row, kshim_menu_text(KSHIM_TEXT_SYSTEM_INTERNAL)) != NULL);
     assert(strstr(default_row, kshim_menu_text(KSHIM_TEXT_DEFAULT_LABEL)) != NULL);
     /* The Default page no longer focuses an unavailable row: internal is now
      * unavailable, so the focus falls on the first selectable row. */
@@ -2682,8 +2577,9 @@ static void test_settings_back_labels(void)
     size_t selected = settings_run(roles, boards, &info, 2, 0, 8000, 0, &rc);
     assert(rc == 0 && selected == 0);
     assert(h.info_snap_count == 9);
-    settings_expect_back(&h.info_snaps[1], SET_SETTINGS_BACK); /* settings */
-    settings_expect_back(&h.info_snaps[2], SET_DEVICE_BACK);   /* device */
+    assert(strcmp(h.info_snaps[1].names[SET_SETTINGS_BACK], KSHIM_STR_BACK) == 0);
+    assert(strcmp(h.info_snaps[2].names[SET_DEVICE_BACK], kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS)) == 0);
+    assert(strcmp(snap_desc(&h.info_snaps[2], SET_DEVICE_BACK), kshim_menu_text(KSHIM_TEXT_BACK_SETTINGS_DESC)) == 0);
     settings_expect_back(&h.info_snaps[4], SET_DEFAULT_BACK);  /* default */
     settings_expect_back(&h.info_snaps[6], SET_LANGUAGE_BACK); /* language */
 }
@@ -2731,7 +2627,7 @@ static void test_settings_language_rebuild(void)
     assert(strcmp(settings_zh->names[0], expected_device) == 0);
     snprintf(expected_default, sizeof(expected_default),
              kshim_menu_text(KSHIM_TEXT_SETTINGS_DEFAULT_FMT),
-             kshim_menu_role_name(KSHIM_MENU_ROLE_INTERNAL, NULL));
+             "机身 ArmadaOS");
     assert(strcmp(settings_zh->names[1], expected_default) == 0);
 }
 
@@ -3162,6 +3058,32 @@ int storage_settings_native_ab_status(struct kshim_ab_status *s) { *s=ab_status;
 bool storage_settings_native_handoff_safe(void) { return ab_safe; }
 int storage_settings_native_ab_select(unsigned target,unsigned current)
 { assert(target==1&&current==0);++ab_selects;return ab_select_rc; }
+static void test_device_info_reviewed_fields(void)
+{
+    const char *names[]={"Android","Internal"};
+    const kshim_menu_role_t roles[]={KSHIM_MENU_ROLE_ANDROID,KSHIM_MENU_ROLE_INTERNAL};
+    const enum device_board boards[]={DEVICE_BOARD_UNKNOWN,DEVICE_BOARD_TB323FU};
+    struct device_info info=settings_info(DEVICE_BOARD_TB323FU);
+    info.ram_known=true;info.dt_reported_ram_bytes=UINT64_C(12)*1024*1024*1024;
+    for(unsigned language=0;language<2;++language)for(unsigned trial=0;trial<3;++trial){
+        settings_setup(0,2);kshim_platform_bind_settings(NULL);
+        kshim_menu_set_language((kshim_menu_language_t)language);
+        ab_available=1;ab_status.current=trial%2;ab_status_rc=trial==2?-1:0;ab_selects=0;
+        struct menu_selection menu={0};
+        assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1)==0);
+        const char *failure=NULL;size_t selected=SIZE_MAX;
+        assert(menu_activate(&menu,menu.device_info_row,&selected,&failure)==2);
+        const char *summary=menu.pages[MENU_PAGE_INFO].descriptions[menu.device_info_row];
+        assert(strstr(summary,language?"Current A/B slot: ":"当前A/B槽位: "));
+        assert(strstr(summary,trial==2?kshim_menu_text(KSHIM_TEXT_UNKNOWN):
+            (language?(trial?"slot B":"slot A"):(trial?"B槽":"A槽"))));
+        assert(strstr(summary,"12288 MiB"));
+        assert(!strstr(summary,"DT ")&&!strstr(summary,"Framebuffer")&&!strstr(summary,"帧缓冲"));
+        unsigned lines=1;for(const char *c=summary;*c;++c)lines+=*c=='\n';assert(lines==5);
+        assert(!ab_selects&&!h.reset_calls&&!h.off_calls);
+    }
+    ab_available=0;ab_status_rc=0;ab_status.current=0;
+}
 static void test_ab_confirmation(void)
 {
     const char *names[]={"Android","Internal"};
@@ -3232,6 +3154,10 @@ static void test_ab_serial_restart_lock(void)
 
 int main(void)
 {
+#if KSHIM_AB_MENU
+    test_device_info_reviewed_fields();
+#endif
+
 #if CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
     test_language_page_switch();
     test_language_page_navigation();

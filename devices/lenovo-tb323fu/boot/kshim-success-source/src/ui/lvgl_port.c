@@ -236,6 +236,7 @@ static void KshimAnimate(
 /* Expanded details are selected by the focused row's role. */
 static bool mInfoState;
 static bool mBootSlotState;
+static bool mSettingsState;
 
 #include "menu_design_port.h"
 
@@ -259,15 +260,26 @@ static void KshimShowEntry(size_t Index)
   const char *EntryAction = mContext->ActionLabels[Index];
   bool Info = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
       mContext->Roles[Index] == KSHIM_MENU_ROLE_DEVICE_INFO &&
-      EntryAction != NULL && strcmp(EntryAction, KSHIM_MENU_ACTION_BACK) == 0;
+      EntryAction != NULL && strcmp(EntryAction, kshim_menu_text(KSHIM_TEXT_BACK)) == 0;
   bool BootSlot = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
       mContext->Roles[Index] == KSHIM_MENU_ROLE_BOOT_SLOT;
-  if (Info != mInfoState || BootSlot != mBootSlotState) {
+  kshim_menu_role_t Role = mContext->Roles[Index];
+  bool Settings = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      (Role == KSHIM_MENU_ROLE_DEVICE || Role == KSHIM_MENU_ROLE_DEFAULT ||
+       Role == KSHIM_MENU_ROLE_DEVICE_AUTO || Role == KSHIM_MENU_ROLE_DEVICE_TB322FC ||
+       Role == KSHIM_MENU_ROLE_DEVICE_TB323FU || Role == KSHIM_MENU_ROLE_LANGUAGE);
+  if (Info != mInfoState || BootSlot != mBootSlotState || Settings != mSettingsState) {
     mInfoState = Info;
     mBootSlotState = BootSlot;
+    mSettingsState = Settings;
     (void)KshimDesignRelayout();
   }
-  if (mStatus != NULL) lv_label_set_text(mStatus, mContext->Entries[Index]);
+  if (mStatus != NULL) {
+    if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART)
+      lv_obj_set_style_text_font(mStatus,
+          KshimDesignLabelFont(mContext->Entries[Index],mDesignGeometry.status.w),0);
+    lv_label_set_text(mStatus, mContext->Entries[Index]);
+  }
   if (mDetail != NULL) {
     const char *Description = mContext->Descriptions[Index];
     if (Description == NULL || Description[0] == '\0')
@@ -680,6 +692,7 @@ int kshim_lvgl_init(kshim_lvgl_t *Context, kshim_framebuffer_t *Framebuffer, Qco
   mKeyReleasePending = 0U;
   mInfoState = false;
   mBootSlotState = false;
+  mSettingsState = false;
   KshimPlaceScratch();
   kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_FONT);
   if (KshimRenderInitialBackground() != 0) goto Failed;
@@ -862,6 +875,12 @@ void kshim_lvgl_set_entry_roles(kshim_lvgl_t *Context, const kshim_menu_role_t *
   if (mList != NULL) lv_obj_invalidate(mList);
 }
 
+void kshim_lvgl_set_page_title(kshim_lvgl_t *Context, const char *Text)
+{
+  if (kshim_lvgl_ready(Context) && mTitle != NULL && Text != NULL)
+    lv_label_set_text(mTitle, Text);
+}
+
 void kshim_lvgl_set_status(kshim_lvgl_t *Context, const char *Text)
 {
   /* In expanded STAR details the status label carries the entry title, so keep
@@ -980,4 +999,5 @@ void kshim_lvgl_deinit(kshim_lvgl_t *Context)
   mTileWidth = 0U;
   mInfoState = false;
   mBootSlotState = false;
+  mSettingsState = false;
 }
