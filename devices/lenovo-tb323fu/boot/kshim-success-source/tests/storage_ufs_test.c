@@ -11,6 +11,8 @@ struct fixture {
     unsigned tur_fail, tur_count, cap_count;
     unsigned sense_len, segment, sense_format, sense_key, sense_asc;
     unsigned char disk[4096];
+    uint32_t boot_lun;
+    int ignore_boot_lun_write;
 };
 #define TUR_ALWAYS 0xFFFFFFFFu
 static uint32_t le32(const unsigned char *p)
@@ -51,9 +53,17 @@ static int wr(void *p,uint32_t o,uint32_t v) {
     memset(rsp,0,512);rsp[0]=q[0]+0x20;rsp[2]=q[2];
     rsp[3]=f->bad_tag?1:0;rsp[6]=f->bad_response?1:0;rsp[7]=f->bad_status?2:0;
     if(q[0]==0x16) {
-        assert(q[5]==1 && q[12]==1);memcpy(rsp+12,q+12,20);
-        rsp[10]=0;rsp[11]=4;rsp[18]=0;rsp[19]=4;
-        rsp[32]=4;rsp[33]=q[13];rsp[34]=q[14];rsp[35]=1;
+        memcpy(rsp+12,q+12,20);
+        if(q[12]==3||q[12]==4){
+            assert(q[13]==0&&q[14]==0&&q[15]==0&&q[18]==0&&q[19]==0);
+            assert(q[5]==(q[12]==4?0x81:1));
+            if(q[12]==4&&!f->ignore_boot_lun_write)f->boot_lun=q[23];
+            be32(rsp+20,f->boot_lun);
+        } else {
+            assert(q[5]==1 && q[12]==1);
+            rsp[10]=0;rsp[11]=4;rsp[18]=0;rsp[19]=4;
+            rsp[32]=4;rsp[33]=q[13];rsp[34]=q[14];rsp[35]=1;
+        }
     } else if(q[0]==1) {
         unsigned char op=q[16];
         if(op==0)++f->tur_count;
@@ -205,5 +215,12 @@ int main(void) {
     submissions=f.submits;
     assert(kshim_ufs_nop(&h)==KSHIM_UFS_QUARANTINED&&f.submits==submissions);
     assert(kshim_ufs_release(&h)!=0&&h.owned);
-    puts("UFS legacy transport, wire format, block IO, restore, timeout quarantine: PASS");
+    init(&f);claim(&f,&h);f.boot_lun=1;uint32_t boot_lun=0;
+    assert(kshim_ufs_get_boot_lun(&h,&boot_lun)==0&&boot_lun==1);
+    assert(kshim_ufs_set_boot_lun(&h,2)==0&&f.boot_lun==2);
+    f.ignore_boot_lun_write=1;assert(kshim_ufs_set_boot_lun(&h,1)!=0);
+    submissions=f.submits;assert(kshim_ufs_set_boot_lun(&h,0)!=0&&f.submits==submissions);
+    f.bad_tag=1;assert(kshim_ufs_get_boot_lun(&h,&boot_lun)!=0);f.bad_tag=0;
+    assert(kshim_ufs_release(&h)==0);
+    puts("UFS transport, boot LUN readback, block IO, restore, timeout quarantine: PASS");
 }

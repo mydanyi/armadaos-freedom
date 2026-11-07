@@ -218,7 +218,8 @@ static int transfer(struct kshim_ufs_host *h,uint8_t kind,uint8_t lun,
         q[1]=direction==2?0x40:direction==1?0x20:0;
         be32(q+12,bytes);memcpy(q+16,command,16);
     } else if(kind==0x16){
-        q[5]=1;q[12]=query_opcode;q[13]=descriptor;q[14]=index;
+        q[5]=query_opcode==4?0x81:1;q[12]=query_opcode;q[13]=descriptor;q[14]=index;
+        if(query_opcode==4)be32(q+20,*(uint32_t *)data);
         if(query_opcode==1){
             q[18]=(uint8_t)(*length>>8);q[19]=(uint8_t)*length;
         }
@@ -299,7 +300,7 @@ static int transfer(struct kshim_ufs_host *h,uint8_t kind,uint8_t lun,
         uint16_t n=get16(rsp+18),segment=get16(rsp+10);
         if(rsp[7]||rsp[12]!=query_opcode||rsp[13]!=descriptor||
            rsp[14]!=index||rsp[15]!=0)return KSHIM_UFS_RESPONSE;
-        if(query_opcode==3){
+        if(query_opcode==3 || query_opcode==4){
             if(n||segment)return KSHIM_UFS_RESPONSE;
             *(uint32_t *)data=get32(rsp+20);
         } else {
@@ -312,6 +313,20 @@ static int transfer(struct kshim_ufs_host *h,uint8_t kind,uint8_t lun,
 }
 int kshim_ufs_nop(struct kshim_ufs_host *h)
 { return transfer(h,0,0,NULL,0,0,NULL,0,0,NULL,0); }
+int kshim_ufs_get_boot_lun(struct kshim_ufs_host *h,uint32_t *value)
+{
+    if(!value)return KSHIM_STORAGE_ARG;
+    int rc=transfer(h,0x16,0,NULL,0,0,value,0,0,NULL,3);
+    return rc?rc:(*value==1||*value==2)?0:KSHIM_STORAGE_FORMAT;
+}
+int kshim_ufs_set_boot_lun(struct kshim_ufs_host *h,uint32_t value)
+{
+    if(value!=1 && value!=2)return KSHIM_STORAGE_ARG;
+    uint32_t response=value,actual=0;
+    int rc=transfer(h,0x16,0,NULL,0,0,&response,0,0,NULL,4);
+    if(!rc)rc=kshim_ufs_get_boot_lun(h,&actual);
+    return rc?rc:actual==value?0:KSHIM_STORAGE_IO;
+}
 int kshim_ufs_read_descriptor(struct kshim_ufs_host *h,uint8_t id,uint8_t index,
                               void *out,uint16_t *length)
 {

@@ -24,6 +24,12 @@
 #include <device_info.h>
 #include <boot_settings.h>
 #include <boot_metrics.h>
+#if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
+#include <storage_settings_native.h>
+#define KSHIM_AB_MENU 1
+#else
+#define KSHIM_AB_MENU 0
+#endif
 #if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
 #include <qcom_reboot.h>
 #endif
@@ -596,6 +602,7 @@ enum menu_action {
      * return a payload. */
     MENU_SETTINGS, MENU_DEVICE, MENU_DEFAULT,
     MENU_DEVICE_SET, MENU_DEFAULT_SET, MENU_UNAVAILABLE,
+    MENU_AB, MENU_AB_CHOOSE, MENU_AB_COMMIT,
 };
 struct menu_page {
     const char *names[KSHIM_MENU_MAX_ENTRIES];
@@ -611,7 +618,7 @@ struct menu_page {
 enum menu_page_id {
     MENU_PAGE_MAIN = 0, MENU_PAGE_ADVANCED = 1, MENU_PAGE_LANGUAGE = 2,
     MENU_PAGE_INFO = 3, MENU_PAGE_SETTINGS = 4, MENU_PAGE_DEVICE = 5,
-    MENU_PAGE_DEFAULT = 6, MENU_PAGE_COUNT = 7
+    MENU_PAGE_DEFAULT = 6, MENU_PAGE_AB = 7, MENU_PAGE_AB_CONFIRM = 8, MENU_PAGE_COUNT = 9
 };
 static struct kshim_settings_session *BoundSettings;
 void kshim_platform_bind_settings(struct kshim_settings_session *session)
@@ -664,6 +671,11 @@ struct menu_selection {
     /* Row names that carry the current value and must outlive the fill. */
     char setting_device_name[KSHIM_INFO_VALUE_LEN];
     char setting_default_name[KSHIM_INFO_VALUE_LEN];
+#if KSHIM_AB_MENU
+    struct kshim_ab_status ab;
+    unsigned ab_target;
+    int ab_restart_required;
+#endif
 };
 /* A settings save changes UI state only after the storage layer has flushed
  * and read back the selected slot. Missing bindings preserve legacy behavior. */
@@ -709,6 +721,8 @@ static int menu_append(struct menu_page *page, const char *name, const char *des
     case MENU_SETTINGS:
     case MENU_DEVICE:
     case MENU_DEFAULT:
+    case MENU_AB:
+    case MENU_AB_CHOOSE:
         page->action_labels[row] = KSHIM_MENU_ACTION_ENTER;
         break;
     /* A field confirmation is read-only and returns home, so its label is the
@@ -728,6 +742,7 @@ static int menu_append(struct menu_page *page, const char *name, const char *des
         page->action_labels[row] = kshim_menu_text(KSHIM_TEXT_LANGUAGE_SELECT);
         break;
     case MENU_RESET:
+    case MENU_AB_COMMIT:
         page->action_labels[row] = KSHIM_MENU_ACTION_RESTART;
         break;
     case MENU_OFF:
@@ -1343,6 +1358,12 @@ static int menu_fill_settings(struct menu_selection *menu)
                     KSHIM_MENU_ROLE_LANGUAGE))
         return -1;
 #endif
+#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
+    if (storage_settings_native_ab_supported() &&
+        menu_append(&menu->pages[MENU_PAGE_SETTINGS], kshim_menu_text(KSHIM_TEXT_AB),
+            kshim_menu_text(KSHIM_TEXT_AB_DESC), MENU_AB, 0, KSHIM_MENU_ROLE_UNKNOWN))
+        return -1;
+#endif
     if (menu_append(&menu->pages[MENU_PAGE_SETTINGS], KSHIM_MENU_ACTION_BACK,
                     KSHIM_MENU_DESC_BACK_PARENT,
                     MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
@@ -1549,6 +1570,12 @@ static int menu_activate(struct menu_selection *menu, size_t index,
 {
     struct menu_page *page = &menu->pages[menu->page];
     enum menu_action action = page->actions[index];
+#if KSHIM_AB_MENU
+    if (menu->ab_restart_required && action != MENU_RESET && action != MENU_OFF) {
+        *failure = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+        return 0;
+    }
+#endif
     *failure = NULL;
     if (action == MENU_PAYLOAD) {
         *selected = page->payloads[index];
@@ -1585,6 +1612,12 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         if (menu->settings) {
             /* Every BACK returns to its immediate parent layer. */
             switch (from) {
+            case MENU_PAGE_AB:
+                menu->page = MENU_PAGE_SETTINGS;
+                break;
+            case MENU_PAGE_AB_CONFIRM:
+                menu->page = MENU_PAGE_AB;
+                break;
             case MENU_PAGE_ADVANCED:
                 menu->page = MENU_PAGE_MAIN;
                 menu->pages[MENU_PAGE_MAIN].initial = menu->advanced_row;
@@ -1627,6 +1660,52 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         menu->pages[MENU_PAGE_SETTINGS].initial = 0U;
         return 2;
     }
+#if KSHIM_AB_MENU && CONFIG_KSHIM_MENU_POWER_ACTIONS
+    if (action == MENU_AB) {
+        if (!menu->psci_ready || storage_settings_native_ab_status(&menu->ab)) {
+            *failure = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            return 0;
+        }
+        struct menu_page *ab = &menu->pages[MENU_PAGE_AB];
+        memset(ab, 0, sizeof(*ab));
+        for (unsigned s = 0; s < 2; ++s) {
+            int current = s == menu->ab.current;
+            menu_append(ab, current ? (s ? "B" : "A") : kshim_menu_text(s ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A),
+                kshim_menu_text(current ? KSHIM_TEXT_AB_CURRENT : KSHIM_TEXT_AB_DESC),
+                current || !menu->ab.bootable[s] ? MENU_UNAVAILABLE : MENU_AB_CHOOSE,
+                s, KSHIM_MENU_ROLE_UNKNOWN);
+        }
+        menu_append(ab, KSHIM_MENU_ACTION_BACK, KSHIM_MENU_DESC_BACK_PARENT, MENU_BACK, 0, KSHIM_MENU_ROLE_BACK);
+        ab->initial = 2;
+        menu->timeout = 0;
+        menu->page = MENU_PAGE_AB;
+        return 2;
+    }
+    if (action == MENU_AB_CHOOSE) {
+        menu->ab_target = page->payloads[index];
+        struct menu_page *confirm = &menu->pages[MENU_PAGE_AB_CONFIRM];
+        memset(confirm, 0, sizeof(*confirm));
+        menu_append(confirm, kshim_menu_text(menu->ab_target ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A),
+            kshim_menu_text(KSHIM_TEXT_AB_CONFIRM), MENU_AB_COMMIT, menu->ab_target, KSHIM_MENU_ROLE_UNKNOWN);
+        menu_append(confirm, KSHIM_MENU_ACTION_BACK, KSHIM_MENU_DESC_BACK_PARENT, MENU_BACK, 0, KSHIM_MENU_ROLE_BACK);
+        confirm->initial = 1;
+        menu->page = MENU_PAGE_AB_CONFIRM;
+        return 2;
+    }
+    if (action == MENU_AB_COMMIT) {
+        int rc = storage_settings_native_ab_select(menu->ab_target, menu->ab.current);
+        if (rc && storage_settings_native_handoff_safe()) {
+            *failure = kshim_menu_text(KSHIM_TEXT_AB_FAILED);
+            return 0;
+        }
+        /* A failed reset must not hand off an image loaded from the old slot. */
+        menu->ab_restart_required = 1;
+        (void)kshim_psci_request_system_reset();
+        menu->page = MENU_PAGE_MAIN;
+        *failure = kshim_menu_text(KSHIM_TEXT_AB_RESTART);
+        return 2;
+    }
+#endif
     if (action == MENU_DEVICE) {
         menu->page = MENU_PAGE_DEVICE;
         menu->pages[MENU_PAGE_DEVICE].initial = (size_t)menu->boot.device_choice;

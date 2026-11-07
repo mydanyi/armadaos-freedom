@@ -106,3 +106,31 @@ bool kshim_ufs_settings_handoff_safe(const struct kshim_ufs_settings *b)
 {
     return b && !b->unsafe && !b->host.owned;
 }
+static int get_boot_lun(void *ctx,uint32_t *value)
+{ return kshim_ufs_get_boot_lun(ctx,value); }
+static int set_boot_lun(void *ctx,uint32_t value)
+{ return kshim_ufs_set_boot_lun(ctx,value); }
+int kshim_ufs_settings_ab(struct kshim_ufs_settings *b,struct kshim_ab_status *status,
+                           bool change,unsigned target,unsigned expected_current)
+{
+    if(!b||!b->preflight||!status)return KSHIM_STORAGE_ARG;
+    int rc=start(b,change);if(rc)return rc;
+    struct kshim_ufs_lun luns[KSHIM_AB_LUNS];
+    struct kshim_ab_media media={.ctx=&b->host,.get_boot_lun=get_boot_lun,.set_boot_lun=set_boot_lun};
+    for(unsigned l=0;l<KSHIM_AB_LUNS;++l){
+        uint8_t unit[255];uint16_t length=sizeof(unit);
+        rc=kshim_ufs_read_descriptor(&b->host,2,l,unit,&length);
+        if(rc)break;
+        if(length<5 || unit[2]!=l || unit[3]!=1 || unit[4]>2) {
+            rc=KSHIM_STORAGE_FORMAT;break;
+        }
+        media.boot_id[l]=unit[4];
+        rc=kshim_ufs_open_lun(&b->host,l,change,&luns[l]);
+        if(rc)break;
+        media.lun[l]=luns[l].block;
+    }
+    if(!rc)rc=change?kshim_ab_select(&media,target,expected_current):kshim_ab_inspect(&media,status);
+    if(rc==KSHIM_AB_UNCERTAIN)b->unsafe=1;
+    int cleanup=finish(b);
+    return cleanup?cleanup:rc;
+}

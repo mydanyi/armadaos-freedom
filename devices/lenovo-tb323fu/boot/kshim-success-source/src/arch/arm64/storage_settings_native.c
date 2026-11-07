@@ -96,3 +96,19 @@ int storage_settings_native_export(void *fdt)
 {
     return storage_settings_export(fdt,&Backend,TestPerformed,TestStatus);
 }
+bool storage_settings_native_ab_supported(void)
+{
+    return Backend.preflight && (Backend.board==DEVICE_BOARD_TB322FC || Backend.board==DEVICE_BOARD_TB323FU)
+        && kshim_ufs_settings_handoff_safe(&Backend);
+}
+int storage_settings_native_ab_status(struct kshim_ab_status *status)
+{
+    if(!storage_settings_native_ab_supported())return KSHIM_UFS_UNSUPPORTED;
+    return kshim_ufs_settings_ab(&Backend,status,false,0,0);
+}
+int storage_settings_native_ab_select(unsigned target,unsigned expected_current)
+{
+    if(!storage_settings_native_ab_supported())return KSHIM_UFS_UNSUPPORTED;
+    struct kshim_ab_status status;
+    return kshim_ufs_settings_ab(&Backend,&status,true,target,expected_current);
+}

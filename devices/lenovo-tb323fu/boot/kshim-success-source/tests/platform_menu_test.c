@@ -3150,6 +3150,49 @@ static void test_settings_internal_tf_default_timeout(void)
 
 #endif /* KSHIM_SETTINGS_MENU_TESTS */
 
+#if KSHIM_AB_MENU
+static int ab_available,ab_status_rc,ab_select_rc,ab_safe=1;
+static unsigned ab_selects;
+static struct kshim_ab_status ab_status={0,{1,1}};
+bool storage_settings_native_ab_supported(void) { return ab_available; }
+int storage_settings_native_ab_status(struct kshim_ab_status *s) { *s=ab_status;return ab_status_rc; }
+bool storage_settings_native_handoff_safe(void) { return ab_safe; }
+int storage_settings_native_ab_select(unsigned target,unsigned current)
+{ assert(target==1&&current==0);++ab_selects;return ab_select_rc; }
+static void test_ab_confirmation(void)
+{
+    const char *names[]={"Android","Internal"};
+    const kshim_menu_role_t roles[]={KSHIM_MENU_ROLE_ANDROID,KSHIM_MENU_ROLE_INTERNAL};
+    const enum device_board boards[]={DEVICE_BOARD_UNKNOWN,DEVICE_BOARD_TB323FU};
+    struct device_info info=settings_info(DEVICE_BOARD_TB323FU);
+    for(unsigned trial=0;trial<3;++trial){
+        settings_setup(0,2);kshim_platform_bind_settings(NULL);ab_available=1;ab_selects=0;
+        ab_select_rc=trial?-1:0;ab_safe=trial!=2;
+        h.ui_alive=true;h.psci_calls=1;h.psci_fdt=(const void *)(uintptr_t)boot_fdt();
+        struct menu_selection menu={0};
+        assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1)==0);
+        menu.psci_ready=1;menu.page=MENU_PAGE_SETTINGS;
+        size_t row=0;while(menu.pages[menu.page].actions[row]!=MENU_AB){++row;assert(row<menu.pages[menu.page].count);}
+        const char *failure=NULL;size_t selected=SIZE_MAX;
+        assert(menu_activate(&menu,row,&selected,&failure)==2&&!ab_selects);
+        assert(menu.page==MENU_PAGE_AB&&menu.pages[MENU_PAGE_AB].initial==2);
+        assert(menu.pages[MENU_PAGE_AB].actions[0]==MENU_UNAVAILABLE);
+        assert(menu_activate(&menu,1,&selected,&failure)==2&&!ab_selects);
+        assert(menu.page==MENU_PAGE_AB_CONFIRM&&menu.pages[menu.page].initial==1);
+        assert(menu_activate(&menu,1,&selected,&failure)==2&&!ab_selects); /* cancel */
+        assert(menu_activate(&menu,1,&selected,&failure)==2&&!ab_selects);
+        int result=menu_activate(&menu,0,&selected,&failure);
+        assert(ab_selects==1);
+        if(trial==1){assert(result==0&&!h.reset_calls&&!menu.ab_restart_required);}
+        else {
+            assert(result==2&&h.reset_calls==1&&menu.ab_restart_required);
+            assert(menu_activate(&menu,0,&selected,&failure)==0&&selected==SIZE_MAX);
+        }
+    }
+    ab_available=0;ab_safe=1;ab_select_rc=0;
+}
+#endif
+
 int main(void)
 {
 #if CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
@@ -3223,6 +3266,9 @@ int main(void)
     test_settings_console_off_gate();
 #endif
 #endif /* KSHIM_SETTINGS_MENU_TESTS */
+#if KSHIM_AB_MENU
+    test_ab_confirmation();
+#endif
     puts("Real platform menu regression checks passed");
     return 0;
 }
