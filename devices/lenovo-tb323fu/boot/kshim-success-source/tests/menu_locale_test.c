@@ -126,6 +126,8 @@ static void check_role_fallbacks(void)
     assert(kshim_menu_role_description((kshim_menu_role_t)-1, fallback_desc) == fallback_desc);
     /* KSHIM_MENU_ROLE_MAX is now the last valid role, so MAX + 1 is the first
      * out-of-range value the fallback contract must reject. */
+    assert(kshim_menu_role_name(KSHIM_MENU_ROLE_BOOT_SLOT, fallback_name) == fallback_name);
+    assert(kshim_menu_role_description(KSHIM_MENU_ROLE_BOOT_SLOT, fallback_desc) == fallback_desc);
     assert(kshim_menu_role_name((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_name) == fallback_name);
     assert(kshim_menu_role_description((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_desc) == fallback_desc);
 }
@@ -156,7 +158,8 @@ static void check_role_values(void)
     assert(KSHIM_MENU_ROLE_DEVICE_AUTO == 20);
     assert(KSHIM_MENU_ROLE_DEVICE_TB322FC == 21);
     assert(KSHIM_MENU_ROLE_DEVICE_TB323FU == 22);
-    assert(KSHIM_MENU_ROLE_MAX == KSHIM_MENU_ROLE_DEVICE_TB323FU);
+    assert(KSHIM_MENU_ROLE_BOOT_SLOT == 23);
+    assert(KSHIM_MENU_ROLE_MAX == KSHIM_MENU_ROLE_BOOT_SLOT);
 }
 
 /* The changed/added session-settings strings are non-empty in both languages

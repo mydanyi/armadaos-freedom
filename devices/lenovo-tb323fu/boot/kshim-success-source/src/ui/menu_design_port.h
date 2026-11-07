@@ -230,10 +230,9 @@ static int KshimDesignRelayout(void) {
     if(!mContext || !mFramebuffer || !mPanel || !mTitle || !mStatus || !mList || !mBootButton) return -1;
     if(kshim_design_layout(&mMenuDesign,mContext->LogicalWidth,mContext->LogicalHeight,
         (uint32_t)mContext->EntryCount,KshimDesignScaleOverride(),&mDesignGeometry)!=0) return -2;
-    /* STAR_CHART device-info state: drop the illustration/notice and stretch the
-     * detail panel under the status title, leaving x/width and the boot button
-     * exactly as laid out. */
-    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART && !mDesignGeometry.compact && mInfoState) {
+    /* Device information and boot-slot help use the full right panel. */
+    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART && !mDesignGeometry.compact &&
+       (mInfoState || mBootSlotState)) {
         mDesignGeometry.illustration=(kshim_design_rect_t){0};
         mDesignGeometry.notice=(kshim_design_rect_t){0};
         mDesignGeometry.status.y=mDesignGeometry.list.y;
@@ -283,7 +282,7 @@ static int KshimDesignRelayout(void) {
         lv_obj_set_style_text_font(mStatus,mRowFont,0);
         lv_obj_set_style_text_color(mStatus,lv_color_hex(mMenuStyle.FocusBorder),0);
         if(mDetail) {
-            lv_obj_set_style_text_font(mDetail,mInfoState?mInfoFont:mStatusFont,0);
+            lv_obj_set_style_text_font(mDetail,(mInfoState || mBootSlotState)?mInfoFont:mStatusFont,0);
             lv_obj_set_style_text_color(mDetail,lv_color_hex(mMenuStyle.Text),0);
         }
         if(mCredit) lv_obj_set_style_text_font(mCredit,mStatusFont,0);

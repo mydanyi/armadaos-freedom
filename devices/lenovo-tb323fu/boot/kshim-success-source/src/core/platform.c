@@ -1320,7 +1320,7 @@ static int menu_fill_settings(struct menu_selection *menu)
         menu->ab_entry_row = menu->pages[MENU_PAGE_ADVANCED].count;
         if (storage_settings_native_ab_supported() &&
             menu_append(&menu->pages[MENU_PAGE_ADVANCED], kshim_menu_text(KSHIM_TEXT_AB),
-                kshim_menu_text(KSHIM_TEXT_AB_DESC), MENU_AB, 0, KSHIM_MENU_ROLE_UNKNOWN))
+                kshim_menu_text(KSHIM_TEXT_AB_DESC), MENU_AB, 0, KSHIM_MENU_ROLE_BOOT_SLOT))
             return -1;
 #endif
         if (menu_append(&menu->pages[MENU_PAGE_ADVANCED], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
@@ -1673,10 +1673,13 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         memset(ab, 0, sizeof(*ab));
         for (unsigned s = 0; s < 2; ++s) {
             int current = s == menu->ab.current;
-            menu_append(ab, current ? (s ? "B" : "A") : kshim_menu_text(s ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A),
-                kshim_menu_text(current ? KSHIM_TEXT_AB_CURRENT : KSHIM_TEXT_AB_DESC),
+            menu_append(ab, kshim_menu_text(current ?
+                    (s ? KSHIM_TEXT_AB_CURRENT_B : KSHIM_TEXT_AB_CURRENT_A) :
+                    (s ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A)),
+                kshim_menu_text(current ? KSHIM_TEXT_AB_CURRENT :
+                    (menu->ab.bootable[s] ? KSHIM_TEXT_AB_DESC : KSHIM_TEXT_AB_UNAVAILABLE)),
                 current || !menu->ab.bootable[s] ? MENU_UNAVAILABLE : MENU_AB_CHOOSE,
-                s, KSHIM_MENU_ROLE_UNKNOWN);
+                s, KSHIM_MENU_ROLE_BOOT_SLOT);
         }
         menu_append(ab, KSHIM_MENU_ACTION_BACK, KSHIM_MENU_DESC_BACK_PARENT, MENU_BACK, 0, KSHIM_MENU_ROLE_BACK);
         ab->initial = 2;
@@ -1689,7 +1692,7 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         struct menu_page *confirm = &menu->pages[MENU_PAGE_AB_CONFIRM];
         memset(confirm, 0, sizeof(*confirm));
         menu_append(confirm, kshim_menu_text(menu->ab_target ? KSHIM_TEXT_AB_B : KSHIM_TEXT_AB_A),
-            kshim_menu_text(KSHIM_TEXT_AB_CONFIRM), MENU_AB_COMMIT, menu->ab_target, KSHIM_MENU_ROLE_UNKNOWN);
+            kshim_menu_text(KSHIM_TEXT_AB_CONFIRM), MENU_AB_COMMIT, menu->ab_target, KSHIM_MENU_ROLE_BOOT_SLOT);
         menu_append(confirm, KSHIM_MENU_ACTION_BACK, KSHIM_MENU_DESC_BACK_PARENT, MENU_BACK, 0, KSHIM_MENU_ROLE_BACK);
         confirm->initial = 1;
         menu->page = MENU_PAGE_AB_CONFIRM;

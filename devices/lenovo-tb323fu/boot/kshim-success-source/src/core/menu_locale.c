@@ -117,13 +117,25 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_SETTINGS_INTERNAL] = "更改会保存到机身存储。",
         [KSHIM_TEXT_SETTINGS_TF] = "更改会保存到 TF 卡。",
         [KSHIM_TEXT_SETTINGS_SAVE_FAILED] = "无法确认保存。",
-        [KSHIM_TEXT_AB] = "切换 A/B",
-        [KSHIM_TEXT_AB_DESC] = "检查 A/B 启动状态。选择后需要再次确认并重启。",
-        [KSHIM_TEXT_AB_A] = "切换到 A 并重启",
-        [KSHIM_TEXT_AB_B] = "切换到 B 并重启",
-        [KSHIM_TEXT_AB_CURRENT] = "当前启动项",
-        [KSHIM_TEXT_AB_CONFIRM] = "确认切换并重启？",
-        [KSHIM_TEXT_AB_FAILED] = "无法安全切换 A/B。请检查启动状态。",
+        [KSHIM_TEXT_AB] = "安卓启动槽切换",
+        [KSHIM_TEXT_AB_DESC] = "A/B 是什么？\n"
+            "A、B 是安卓更新使用的两套启动分区。它们不代表安卓和 Linux；选择系统请返回主菜单。\n\n"
+            "什么时候需要切换？\n"
+            "平时无需更改。更新或启动异常时，可在确认另一槽有兼容系统后尝试；切换不保证能修复故障。\n\n"
+            "切换会做什么？\n"
+            "选择目标槽并再次确认后，会保存选择并重启。不会复制系统、恢复备份或清空个人文件。",
+        [KSHIM_TEXT_AB_A] = "改用安卓启动槽 A",
+        [KSHIM_TEXT_AB_B] = "改用安卓启动槽 B",
+        [KSHIM_TEXT_AB_CURRENT] = "这是设备当前使用的安卓启动槽，无需重复选择。\n\n"
+            "A、B 用于切换安卓更新的启动分区，不是安卓和 Linux 的对应关系。要选择启动系统，请返回主菜单。",
+        [KSHIM_TEXT_AB_CURRENT_A] = "安卓启动槽 A（当前）",
+        [KSHIM_TEXT_AB_CURRENT_B] = "安卓启动槽 B（当前）",
+        [KSHIM_TEXT_AB_UNAVAILABLE] = "此槽的启动文件或启动状态未通过检查，当前不能切换到它。\n\n"
+            "本次未更改启动槽。请先修复该槽的启动文件，再尝试切换。",
+        [KSHIM_TEXT_AB_CONFIRM] = "确认后会保存所选安卓启动槽，并立即重启；以后也会使用该槽，直到再次切换。\n\n"
+            "这不会复制系统、恢复备份或清空个人文件。另一槽仍须有兼容的启动文件和系统；切换不保证能修复故障。\n\n"
+            "选择“返回”可取消，本次不会更改启动槽。",
+        [KSHIM_TEXT_AB_FAILED] = "安卓启动槽检查或切换失败，请先检查启动文件和启动状态。",
         [KSHIM_TEXT_AB_RESTART] = "需要重新启动设备。",
         [KSHIM_TEXT_DEVICE_LABEL]     = "设备",
         [KSHIM_TEXT_DEVICE_DESC]      = "选择本次启动使用的机型。",
@@ -224,13 +236,25 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_SETTINGS_INTERNAL] = "Changes are saved to internal storage.",
         [KSHIM_TEXT_SETTINGS_TF] = "Changes are saved to the TF card.",
         [KSHIM_TEXT_SETTINGS_SAVE_FAILED] = "Could not confirm save.",
-        [KSHIM_TEXT_AB] = "Switch A/B slot",
-        [KSHIM_TEXT_AB_DESC] = "Check A/B boot status. Switching requires confirmation and a restart.",
-        [KSHIM_TEXT_AB_A] = "Switch to A and restart",
-        [KSHIM_TEXT_AB_B] = "Switch to B and restart",
-        [KSHIM_TEXT_AB_CURRENT] = "Current boot slot",
-        [KSHIM_TEXT_AB_CONFIRM] = "Confirm slot switch and restart?",
-        [KSHIM_TEXT_AB_FAILED] = "Cannot safely switch A/B. Check the boot state.",
+        [KSHIM_TEXT_AB] = "Android boot slots",
+        [KSHIM_TEXT_AB_DESC] = "What are A/B slots?\n"
+            "Android updates use two sets of boot partitions, A and B. They do not mean Android and Linux; choose your OS in the main menu.\n\n"
+            "When should I switch?\n"
+            "Normally, leave this unchanged. For update or boot problems, only try another slot with a compatible system. Switching may not fix the problem.\n\n"
+            "What will happen?\n"
+            "Choose a slot, then confirm to save it and restart. This does not copy a system, restore a backup, or erase personal files.",
+        [KSHIM_TEXT_AB_A] = "Use Android boot slot A",
+        [KSHIM_TEXT_AB_B] = "Use Android boot slot B",
+        [KSHIM_TEXT_AB_CURRENT] = "This is the Android boot slot currently in use. There is no need to select it again.\n\n"
+            "A and B are boot partition sets used for Android updates, not Android and Linux. Choose your OS in the main menu.",
+        [KSHIM_TEXT_AB_CURRENT_A] = "Android slot A (current)",
+        [KSHIM_TEXT_AB_CURRENT_B] = "Android slot B (current)",
+        [KSHIM_TEXT_AB_UNAVAILABLE] = "This slot did not pass the boot-file or boot-state checks and cannot be selected.\n\n"
+            "The active slot has not changed. Repair the slot's boot files before trying again.",
+        [KSHIM_TEXT_AB_CONFIRM] = "Confirming saves the selected Android boot slot and restarts immediately. It remains selected until another slot change.\n\n"
+            "This does not copy a system, restore a backup, or erase personal files. The other slot must have compatible boot files and a system. Switching may not fix a boot problem.\n\n"
+            "Choose Back to cancel without changing the boot slot.",
+        [KSHIM_TEXT_AB_FAILED] = "Android boot-slot check or switch failed. Check the boot files and boot state.",
         [KSHIM_TEXT_AB_RESTART] = "Restart the device to continue.",
         [KSHIM_TEXT_DEVICE_LABEL]     = "Device",
         [KSHIM_TEXT_DEVICE_DESC]      = "Choose the device used for this boot.",
@@ -281,6 +305,7 @@ static const kshim_menu_text_id kshim_menu_role_name_table[KSHIM_MENU_ROLE_MAX +
     [KSHIM_MENU_ROLE_DEVICE_AUTO] = KSHIM_TEXT_DEVICE_AUTO_NAME,
     [KSHIM_MENU_ROLE_DEVICE_TB322FC] = KSHIM_TEXT_DEVICE_TB322FC_NAME,
     [KSHIM_MENU_ROLE_DEVICE_TB323FU] = KSHIM_TEXT_DEVICE_TB323FU_NAME,
+    [KSHIM_MENU_ROLE_BOOT_SLOT] = KSHIM_TEXT_COUNT,
 };
 
 /* Role -> description id; KSHIM_TEXT_COUNT means "use the caller fallback". */
@@ -308,6 +333,7 @@ static const kshim_menu_text_id kshim_menu_role_desc_table[KSHIM_MENU_ROLE_MAX +
     [KSHIM_MENU_ROLE_DEVICE_AUTO] = KSHIM_TEXT_DEVICE_AUTO_DESC,
     [KSHIM_MENU_ROLE_DEVICE_TB322FC] = KSHIM_TEXT_DEVICE_TB322FC_DESC,
     [KSHIM_MENU_ROLE_DEVICE_TB323FU] = KSHIM_TEXT_DEVICE_TB323FU_DESC,
+    [KSHIM_MENU_ROLE_BOOT_SLOT] = KSHIM_TEXT_COUNT,
 };
 
 kshim_menu_language_t kshim_menu_get_language(void)

@@ -242,7 +242,7 @@ static void RenderStarAdvanced(const char *Directory, kshim_lvgl_t *Ui,
 {
     static const kshim_menu_role_t Roles[6] = {
         KSHIM_MENU_ROLE_DIAGNOSTIC, KSHIM_MENU_ROLE_RECOVERY,
-        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_UNKNOWN, KSHIM_MENU_ROLE_BACK,
+        KSHIM_MENU_ROLE_FASTBOOT, KSHIM_MENU_ROLE_EDL, KSHIM_MENU_ROLE_BOOT_SLOT, KSHIM_MENU_ROLE_BACK,
     };
     const char *Names[6];
     const char *Descriptions[6];
@@ -406,6 +406,30 @@ static void RenderStarDeviceInfo(const char *Directory, kshim_lvgl_t *Ui,
     (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
 }
 
+static void AssertBootSlotHelpFits(lv_obj_t *Object, const char *Text,
+                                  const kshim_lvgl_t *Ui)
+{
+    if (lv_obj_check_type(Object, &lv_label_class) &&
+        strcmp(lv_label_get_text(Object), Text) == 0) {
+        lv_point_t Size;
+        lv_text_get_size(&Size, Text, lv_obj_get_style_text_font(Object, 0),
+            lv_obj_get_style_text_letter_space(Object, 0),
+            lv_obj_get_style_text_line_space(Object, 0),
+            lv_obj_get_content_width(Object), LV_TEXT_FLAG_NONE);
+        printf("BOOT SLOT HELP: text=%ldx%ld area=%ldx%ld\n",
+            (long)Size.x, (long)Size.y, (long)lv_obj_get_content_width(Object),
+            (long)lv_obj_get_content_height(Object));
+        assert(Size.x <= lv_obj_get_content_width(Object));
+        assert(Size.y <= lv_obj_get_content_height(Object));
+        lv_area_t Body, Button;
+        lv_obj_get_coords(Object, &Body);
+        lv_obj_get_coords(Ui->BootButton, &Button);
+        assert(Body.y2 < Button.y1);
+    }
+    for (uint32_t Index = 0; Index < lv_obj_get_child_count(Object); Index++)
+        AssertBootSlotHelpFits(lv_obj_get_child(Object, (int32_t)Index), Text, Ui);
+}
+
 static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
                          const kshim_framebuffer_t *Framebuffer,
                          uint32_t Width,uint32_t Height,const char *Tag)
@@ -418,22 +442,22 @@ static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
     const char *actions[6]={KSHIM_MENU_ACTION_BOOT,KSHIM_MENU_ACTION_ENTER,
         KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_BACK};
     kshim_menu_role_t roles[6]={KSHIM_MENU_ROLE_DIAGNOSTIC,KSHIM_MENU_ROLE_RECOVERY,
-        KSHIM_MENU_ROLE_FASTBOOT,KSHIM_MENU_ROLE_EDL,KSHIM_MENU_ROLE_UNKNOWN,KSHIM_MENU_ROLE_BACK};
+        KSHIM_MENU_ROLE_FASTBOOT,KSHIM_MENU_ROLE_EDL,KSHIM_MENU_ROLE_BOOT_SLOT,KSHIM_MENU_ROLE_BACK};
     for(unsigned page=0;page<4;++page){
         size_t count=6,initial=4;
         if(page==1){
-            names[0]="A";names[1]=kshim_menu_text(KSHIM_TEXT_AB_B);names[2]=KSHIM_MENU_ACTION_BACK;
+            names[0]=kshim_menu_text(KSHIM_TEXT_AB_CURRENT_A);names[1]=kshim_menu_text(KSHIM_TEXT_AB_B);names[2]=KSHIM_MENU_ACTION_BACK;
             descriptions[0]=kshim_menu_text(KSHIM_TEXT_AB_CURRENT);
             descriptions[1]=kshim_menu_text(KSHIM_TEXT_AB_DESC);descriptions[2]=KSHIM_MENU_DESC_BACK_PARENT;
             actions[0]=kshim_menu_text(KSHIM_TEXT_ACTION_UNAVAILABLE);
             actions[1]=KSHIM_MENU_ACTION_ENTER;actions[2]=KSHIM_MENU_ACTION_BACK;
-            roles[0]=roles[1]=KSHIM_MENU_ROLE_UNKNOWN;roles[2]=KSHIM_MENU_ROLE_BACK;
+            roles[0]=roles[1]=KSHIM_MENU_ROLE_BOOT_SLOT;roles[2]=KSHIM_MENU_ROLE_BACK;
             count=3;initial=1;
         }else if(page>=2){
             names[0]=kshim_menu_text(KSHIM_TEXT_AB_B);names[1]=KSHIM_MENU_ACTION_BACK;
             descriptions[0]=kshim_menu_text(KSHIM_TEXT_AB_CONFIRM);descriptions[1]=KSHIM_MENU_DESC_BACK_PARENT;
             actions[0]=KSHIM_MENU_ACTION_RESTART;actions[1]=KSHIM_MENU_ACTION_BACK;
-            roles[0]=KSHIM_MENU_ROLE_UNKNOWN;roles[1]=KSHIM_MENU_ROLE_BACK;
+            roles[0]=KSHIM_MENU_ROLE_BOOT_SLOT;roles[1]=KSHIM_MENU_ROLE_BACK;
             count=2;initial=page==2?1:0;
         }
         assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,count,initial)==0);
@@ -441,6 +465,8 @@ static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
         kshim_lvgl_set_countdown(Ui,0);kshim_lvgl_set_status(Ui,"");
         Advance(Ui,400);
         AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        if (roles[initial] == KSHIM_MENU_ROLE_BOOT_SLOT)
+            AssertBootSlotHelpFits(lv_screen_active(), descriptions[initial], Ui);
         snprintf(stage,sizeof(stage),"star-%s-ab-%u",Tag,page);
         (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
     }

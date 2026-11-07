@@ -233,10 +233,9 @@ static void KshimAnimate(
   lv_anim_start(&Animation);
 }
 
-/* True while the focused row is the read-only Device info summary. It is
- * identified only by the existing DEVICE_INFO role plus the current localized
- * Back action, so no new role or API is introduced. */
+/* Expanded details are selected by the focused row's role. */
 static bool mInfoState;
+static bool mBootSlotState;
 
 #include "menu_design_port.h"
 
@@ -256,14 +255,16 @@ static int KshimButtonIndex(const lv_obj_t *Button)
 static void KshimShowEntry(size_t Index)
 {
   if (mContext == NULL || Index >= mContext->EntryCount) return;
-  /* Entering or leaving the read-only summary changes the STAR chart geometry;
-   * an ordinary row restores the baseline layout. */
+  /* An ordinary row restores the baseline STAR chart layout. */
   const char *EntryAction = mContext->ActionLabels[Index];
   bool Info = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
       mContext->Roles[Index] == KSHIM_MENU_ROLE_DEVICE_INFO &&
       EntryAction != NULL && strcmp(EntryAction, KSHIM_MENU_ACTION_BACK) == 0;
-  if (Info != mInfoState) {
+  bool BootSlot = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      mContext->Roles[Index] == KSHIM_MENU_ROLE_BOOT_SLOT;
+  if (Info != mInfoState || BootSlot != mBootSlotState) {
     mInfoState = Info;
+    mBootSlotState = BootSlot;
     (void)KshimDesignRelayout();
   }
   if (mStatus != NULL) lv_label_set_text(mStatus, mContext->Entries[Index]);
@@ -678,6 +679,7 @@ int kshim_lvgl_init(kshim_lvgl_t *Context, kshim_framebuffer_t *Framebuffer, Qco
   mKey = LV_KEY_ENTER;
   mKeyReleasePending = 0U;
   mInfoState = false;
+  mBootSlotState = false;
   KshimPlaceScratch();
   kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_FONT);
   if (KshimRenderInitialBackground() != 0) goto Failed;
@@ -862,10 +864,10 @@ void kshim_lvgl_set_entry_roles(kshim_lvgl_t *Context, const kshim_menu_role_t *
 
 void kshim_lvgl_set_status(kshim_lvgl_t *Context, const char *Text)
 {
-  /* In the STAR info state the status label carries the device title, so keep
+  /* In expanded STAR details the status label carries the entry title, so keep
    * writes on the (hidden) notice instead of clearing that title. */
   lv_obj_t *Notice;
-  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART && mInfoState) {
+  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART && (mInfoState || mBootSlotState)) {
     Notice = mNotice;
   } else {
     Notice = mNotice != NULL && !lv_obj_has_flag(mNotice, LV_OBJ_FLAG_HIDDEN) ? mNotice : mStatus;
@@ -977,4 +979,5 @@ void kshim_lvgl_deinit(kshim_lvgl_t *Context)
   mTileHeight = 0U;
   mTileWidth = 0U;
   mInfoState = false;
+  mBootSlotState = false;
 }
