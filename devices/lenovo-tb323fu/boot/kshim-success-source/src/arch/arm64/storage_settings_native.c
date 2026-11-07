@@ -101,14 +101,29 @@ bool storage_settings_native_ab_supported(void)
     return Backend.preflight && (Backend.board==DEVICE_BOARD_TB322FC || Backend.board==DEVICE_BOARD_TB323FU)
         && kshim_ufs_settings_handoff_safe(&Backend);
 }
-int storage_settings_native_ab_status(struct kshim_ab_status *status)
+static int ab_transaction(struct kshim_ab_status *status,bool change,
+                          unsigned target,unsigned expected_current)
 {
     if(!storage_settings_native_ab_supported())return KSHIM_UFS_UNSUPPORTED;
-    return kshim_ufs_settings_ab(&Backend,status,false,0,0);
+    bool restore_off=!kshim_mmu_is_enabled();
+    if(restore_off && (!kshim_mmu_root_table() || kshim_mmu_enable_current_cpu())){
+        Backend.begin_status=KSHIM_UFS_UNSUPPORTED;
+        return KSHIM_UFS_UNSUPPORTED;
+    }
+    int rc=kshim_ufs_settings_ab(&Backend,status,change,target,expected_current);
+    if(!kshim_ufs_settings_handoff_safe(&Backend))return KSHIM_UFS_QUARANTINED;
+    if(restore_off && kshim_mmu_prepare_handoff()){
+        Backend.unsafe=1;
+        return KSHIM_UFS_QUARANTINED;
+    }
+    return rc;
+}
+int storage_settings_native_ab_status(struct kshim_ab_status *status)
+{
+    return ab_transaction(status,false,0,0);
 }
 int storage_settings_native_ab_select(unsigned target,unsigned expected_current)
 {
-    if(!storage_settings_native_ab_supported())return KSHIM_UFS_UNSUPPORTED;
     struct kshim_ab_status status;
-    return kshim_ufs_settings_ab(&Backend,&status,true,target,expected_current);
+    return ab_transaction(&status,true,target,expected_current);
 }

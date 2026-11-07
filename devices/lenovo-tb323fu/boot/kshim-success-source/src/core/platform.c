@@ -1832,6 +1832,13 @@ static void serial_cancel_timeout(struct menu_selection *menu)
     if (menu->timeout) printf("\n%s\n", KSHIM_STR_AUTO_CANCELLED);
     menu->timeout = 0;
 }
+static int menu_default_allowed(const struct menu_selection *menu)
+{
+#if KSHIM_AB_MENU
+    if(menu->ab_restart_required)return 0;
+#endif
+    return menu->default_ok;
+}
 static int serial_select(struct menu_selection *menu, size_t *selected)
 {
     int keys_ready = build_keys(menu->fdt) == 0;
@@ -1871,7 +1878,7 @@ static int serial_select(struct menu_selection *menu, size_t *selected)
                         : page->count - 1U;
                     confirm = 1;
                     serial_cancel_timeout(menu);
-                } else if (menu->default_ok) {
+                } else if (menu_default_allowed(menu)) {
                     /* Only a proven, board-safe default may be auto-selected;
                      * with none resolved, Escape never guesses a system. */
                     *selected = menu->original_initial;
@@ -1917,7 +1924,7 @@ static int serial_select(struct menu_selection *menu, size_t *selected)
             numeric = 0;
             continue;
         }
-        if (menu->timeout && menu->default_ok &&
+        if (menu->timeout && menu_default_allowed(menu) &&
             get_current_time() - start >= (uint64_t)menu->timeout) {
             *selected = menu->original_initial;
             return 0;
@@ -1993,7 +2000,7 @@ static int platform_select(uint64_t fdt, const char *const *names,
                 }
                 continue;
             }
-            if (menu.timeout && menu.default_ok &&
+            if (menu.timeout && menu_default_allowed(&menu) &&
                 get_current_time() - start >= (uint64_t)menu.timeout) {
                 *selected = menu.original_initial;
                 break;

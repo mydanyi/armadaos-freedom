@@ -148,14 +148,15 @@ static int load(const struct kshim_ab_media *m,struct capture *c)
     /* A factory-empty secondary boot chain must never become active just
      * because an installer has written boot_b. Firmware authenticates these
      * images at the next reset; here reject missing/empty boot-chain members. */
-    const char *required[]={"abl_a","xbl_a","xbl_config_a","vendor_boot_a","vbmeta_a"};
+    const char *required[]={"abl_a","xbl_a","xbl_config_a","vendor_boot_a","vbmeta_a","init_boot_a"};
     for(unsigned s=0;s<2;++s)for(unsigned i=0;i<sizeof(required)/sizeof(required[0]);++i){
         char text[37];strcpy(text,required[i]);text[strlen(text)-1]=(char)('a'+s);
         unsigned l;uint8_t *e=find(c,text,&l);
         if(!e){c->status.bootable[s]=0;continue;}
         if((rc=read_part(&m->lun[l],e,0,scratch)))return rc;
         if((i<3 && memcmp(scratch,"\x7f" "ELF",4)) ||
-           (i==3 && memcmp(scratch,"VNDRBOOT",8)) || (i==4 && memcmp(scratch,"AVB0",4)))
+           (i==3 && memcmp(scratch,"VNDRBOOT",8)) || (i==4 && memcmp(scratch,"AVB0",4)) ||
+           (i==5 && memcmp(scratch,"ANDROID!",8)))
             c->status.bootable[s]=0;
     }
     /* Refuse unmatched/duplicate A/B pairs before mutation. */

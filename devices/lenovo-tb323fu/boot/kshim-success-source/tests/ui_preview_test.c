@@ -403,6 +403,50 @@ static void RenderStarDeviceInfo(const char *Directory, kshim_lvgl_t *Ui,
     (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
 }
 
+static void RenderStarAb(const char *Directory,kshim_lvgl_t *Ui,
+                         const kshim_framebuffer_t *Framebuffer,
+                         uint32_t Width,uint32_t Height,const char *Tag)
+{
+    char device[96],target[96],stage[80];
+    snprintf(device,sizeof(device),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT),
+             kshim_menu_text(KSHIM_TEXT_DEVICE_TB323FU_NAME));
+    snprintf(target,sizeof(target),kshim_menu_text(KSHIM_TEXT_SETTINGS_DEFAULT_FMT),
+             kshim_menu_role_name(KSHIM_MENU_ROLE_ANDROID,NULL));
+    const char *names[5]={device,target,KSHIM_MENU_TEXT_LANGUAGE_LABEL,
+        kshim_menu_text(KSHIM_TEXT_AB),KSHIM_MENU_ACTION_BACK};
+    const char *descriptions[5]={kshim_menu_text(KSHIM_TEXT_DEVICE_DESC),
+        kshim_menu_text(KSHIM_TEXT_DEFAULT_DESC),kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC),
+        kshim_menu_text(KSHIM_TEXT_AB_DESC),KSHIM_MENU_DESC_BACK_PARENT};
+    const char *actions[5]={KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,
+        KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_ENTER,KSHIM_MENU_ACTION_BACK};
+    kshim_menu_role_t roles[5]={KSHIM_MENU_ROLE_DEVICE,KSHIM_MENU_ROLE_DEFAULT,
+        KSHIM_MENU_ROLE_LANGUAGE,KSHIM_MENU_ROLE_UNKNOWN,KSHIM_MENU_ROLE_BACK};
+    for(unsigned page=0;page<4;++page){
+        size_t count=5,initial=3;
+        if(page==1){
+            names[0]="A";names[1]=kshim_menu_text(KSHIM_TEXT_AB_B);names[2]=KSHIM_MENU_ACTION_BACK;
+            descriptions[0]=kshim_menu_text(KSHIM_TEXT_AB_CURRENT);
+            descriptions[1]=kshim_menu_text(KSHIM_TEXT_AB_DESC);descriptions[2]=KSHIM_MENU_DESC_BACK_PARENT;
+            actions[0]=kshim_menu_text(KSHIM_TEXT_ACTION_UNAVAILABLE);
+            actions[1]=KSHIM_MENU_ACTION_ENTER;actions[2]=KSHIM_MENU_ACTION_BACK;
+            roles[0]=roles[1]=KSHIM_MENU_ROLE_UNKNOWN;roles[2]=KSHIM_MENU_ROLE_BACK;
+            count=3;initial=1;
+        }else if(page>=2){
+            names[0]=kshim_menu_text(KSHIM_TEXT_AB_B);names[1]=KSHIM_MENU_ACTION_BACK;
+            descriptions[0]=kshim_menu_text(KSHIM_TEXT_AB_CONFIRM);descriptions[1]=KSHIM_MENU_DESC_BACK_PARENT;
+            actions[0]=KSHIM_MENU_ACTION_RESTART;actions[1]=KSHIM_MENU_ACTION_BACK;
+            roles[0]=KSHIM_MENU_ROLE_UNKNOWN;roles[1]=KSHIM_MENU_ROLE_BACK;
+            count=2;initial=page==2?1:0;
+        }
+        assert(kshim_lvgl_set_entries_described(Ui,names,descriptions,actions,count,initial)==0);
+        kshim_lvgl_set_entry_roles(Ui,roles,count);
+        kshim_lvgl_set_countdown(Ui,0);kshim_lvgl_set_status(Ui,"");
+        Advance(Ui,400);
+        AssertDescription(Ui,names[initial],descriptions[initial],actions[initial]);
+        snprintf(stage,sizeof(stage),"star-%s-ab-%u",Tag,page);
+        (void)WriteLogicalPpm(Directory,stage,Framebuffer,Width,Height);
+    }
+}
 static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
                                   const kshim_framebuffer_t *Framebuffer,
                                   uint32_t LogicalWidth, uint32_t LogicalHeight,
@@ -414,6 +458,7 @@ static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
     RenderStarLanguagePage(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight,
                            Language, Tag);
     RenderStarDeviceInfo(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
+    RenderStarAb(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
 }
 
 static void RenderStarSize(const char *Directory, uint32_t PhysicalWidth,

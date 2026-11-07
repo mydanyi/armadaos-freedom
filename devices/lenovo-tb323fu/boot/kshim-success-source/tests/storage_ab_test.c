@@ -75,6 +75,7 @@ static void init(struct fixture *f,unsigned bs)
     partition(f,4,0,"boot_a",8,15,"ANDROID!");partition(f,4,1,"boot_b",16,23,"ANDROID!");
     partition(f,4,2,"vendor_boot_a",24,31,"VNDRBOOT");partition(f,4,3,"vendor_boot_b",32,39,"VNDRBOOT");
     partition(f,4,4,"vbmeta_a",40,47,"AVB0");partition(f,4,5,"vbmeta_b",48,55,"AVB0");
+    partition(f,4,6,"init_boot_a",56,63,"ANDROID!");partition(f,4,7,"init_boot_b",64,71,"ANDROID!");
     for(unsigned l=0;l<6;++l)tables(f,l);
 }
 static void dispose(struct fixture *f) { for(unsigned l=0;l<6;++l)free(f->disk[l].bytes); }
@@ -114,6 +115,20 @@ static void failures(unsigned bs,unsigned writes)
     assert(kshim_ab_select(&f.media,1,0)==KSHIM_AB_UNCERTAIN);dispose(&f);
     dispose(&original);
 }
+static void init_boot_gate(unsigned bs)
+{
+    for(unsigned slot=0;slot<2;++slot)for(unsigned fault=0;fault<3;++fault){
+        struct fixture f;init(&f,bs);struct kshim_ab_status status;
+        if(slot==0)assert(kshim_ab_select(&f.media,1,0)==0);
+        f.writes=f.lun_writes=0;
+        if(fault==0){memset(entry(&f,4,6+slot),0,128);tables(&f,4);}
+        else memset(f.disk[4].bytes+(56+8*slot)*bs,fault==1?0:0xff,8);
+        int rc=kshim_ab_inspect(&f.media,&status);
+        assert(rc || !status.bootable[slot]);
+        assert(kshim_ab_select(&f.media,slot,1-slot)!=0);
+        assert(!f.writes&&!f.lun_writes);dispose(&f);
+    }
+}
 static void reject(unsigned bs)
 {
     for(unsigned test=0;test<11;++test){
@@ -139,6 +154,6 @@ static void reject(unsigned bs)
 int main(void)
 {
     const unsigned sizes[]={512,4096};
-    for(unsigned i=0;i<2;++i){unsigned writes=success(sizes[i]);failures(sizes[i],writes);reject(sizes[i]);}
+    for(unsigned i=0;i<2;++i){unsigned writes=success(sizes[i]);failures(sizes[i],writes);reject(sizes[i]);init_boot_gate(sizes[i]);}
     puts("A/B GPT, Boot LUN, empty slot, CRC, OTA and rollback checks: PASS");return 0;
 }

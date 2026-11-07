@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 
 #define CONFIG_KSHIM_FRAMEBUFFER 1
 #define CONFIG_KSHIM_LVGL 1
@@ -672,10 +673,12 @@ static void check_power_request(void)
     assert(h.deinit_calls == (h.serial ? 1U : 0U));
     assert(h.ui_alive == !h.serial);
 }
+static jmp_buf power_exit;
+static int capture_power_off;
 int64_t kshim_psci_request_system_reset(void)
 { check_power_request(); ++h.reset_calls; return h.reset_result; }
 int64_t kshim_psci_request_system_off(void)
-{ check_power_request(); ++h.off_calls; return h.off_result; }
+{ check_power_request(); ++h.off_calls; if(capture_power_off)longjmp(power_exit,1);return h.off_result; }
 
 #if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
 int kshim_qcom_reboot_request(const void *fdt, enum kshim_qcom_reboot_target target)
@@ -3191,6 +3194,34 @@ static void test_ab_confirmation(void)
     }
     ab_available=0;ab_safe=1;ab_select_rc=0;
 }
+static void test_ab_serial_restart_lock(void)
+{
+    const char *names[]={"Android","Internal"};
+    const kshim_menu_role_t roles[]={KSHIM_MENU_ROLE_ANDROID,KSHIM_MENU_ROLE_INTERNAL};
+    const enum device_board boards[]={DEVICE_BOARD_UNKNOWN,DEVICE_BOARD_TB323FU};
+    struct device_info info=settings_info(DEVICE_BOARD_TB323FU);
+    for(unsigned timeout=0;timeout<2;++timeout){
+        settings_setup(1,2);kshim_platform_bind_settings(NULL);ab_available=1;
+        h.psci_calls=1;h.psci_fdt=(const void *)(uintptr_t)boot_fdt();
+        h.deinit_calls=h.handoff_calls=1;
+        struct menu_selection menu={0};size_t selected=SIZE_MAX;
+        assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,1,1,1,1)==0);
+        menu.psci_ready=1;menu.ab_restart_required=1;
+        assert(menu.default_ok);
+        if(!timeout)text_at(0,"\x1b");
+        size_t off=0;
+        while(menu.pages[MENU_PAGE_MAIN].actions[off]!=MENU_OFF)++off;
+        char input[16];snprintf(input,sizeof(input),"%u\r",(unsigned)off+1);
+        text_at(20,input);capture_power_off=1;
+        if(!setjmp(power_exit)){
+            (void)serial_select(&menu,&selected);
+            assert(!"restart lock returned a payload");
+        }
+        capture_power_off=0;
+        assert(h.off_calls==1&&selected==SIZE_MAX);
+    }
+    ab_available=0;
+}
 #endif
 
 int main(void)
@@ -3268,6 +3299,7 @@ int main(void)
 #endif /* KSHIM_SETTINGS_MENU_TESTS */
 #if KSHIM_AB_MENU
     test_ab_confirmation();
+    test_ab_serial_restart_lock();
 #endif
     puts("Real platform menu regression checks passed");
     return 0;
